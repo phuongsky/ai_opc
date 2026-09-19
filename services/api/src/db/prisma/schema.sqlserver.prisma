@@ -1,0 +1,153 @@
+// Prisma schema — Microsoft SQL Server (on-prem, khi Founder đã có hạ tầng MSSQL sẵn).
+// Dùng: prisma migrate dev --schema src/db/prisma/schema.sqlserver.prisma
+generator client {
+  provider = "prisma-client-js"
+  output   = "../../../node_modules/.prisma/client-mssql"
+}
+
+datasource db {
+  provider = "sqlserver"
+  url      = env("DATABASE_URL") // vd: "sqlserver://user:pass@host:1433;database=company_os"
+}
+
+model Department {
+  id             String  @id
+  name           String
+  managerAgentId String? @map("manager_agent_id")
+  agents         Agent[]
+
+  @@map("departments")
+}
+
+model Agent {
+  id             String    @id
+  name           String
+  title          String
+  departmentId   String?   @map("department_id")
+  department     Department? @relation(fields: [departmentId], references: [id])
+  reportsTo      String?   @map("reports_to")
+  mission        String
+  status         String    @default("READY")
+  autonomyLevel   Int       @default(1) @map("autonomy_level")
+  budgetCapUsd    Float?    @map("budget_cap_usd")
+  suspendedReason String?   @map("suspended_reason")
+  monthlyCostUsd  Float     @default(0) @map("monthly_cost_usd")
+  active          Boolean   @default(true)
+  createdAt       DateTime  @default(now()) @map("created_at")
+
+  toolPermissions AgentToolPermission[]
+  tasks           Task[]
+  decisions       DecisionPackage[]
+
+  @@map("agents")
+}
+
+model Tool {
+  id               String  @id
+  name             String
+  description      String?
+  riskLevel        String  @default("R1") @map("risk_level")
+  requiresApproval Boolean @default(false) @map("requires_approval")
+
+  permissions AgentToolPermission[]
+
+  @@map("tools")
+}
+
+model AgentToolPermission {
+  agentId         String @map("agent_id")
+  toolId          String @map("tool_id")
+  permissionLevel String @map("permission_level")
+
+  agent Agent @relation(fields: [agentId], references: [id])
+  tool  Tool  @relation(fields: [toolId], references: [id])
+
+  @@id([agentId, toolId])
+  @@map("agent_tool_permissions")
+}
+
+model Task {
+  id                  String    @id
+  parentTaskId        String?   @map("parent_task_id")
+  title               String
+  objective           String
+  assignedTo          String?   @map("assigned_to")
+  agent               Agent?    @relation(fields: [assignedTo], references: [id])
+  status              String    @default("NEW")
+  riskLevel           String    @default("R1") @map("risk_level")
+  reviewNeededByRole  String    @default("none") @map("review_needed_by_role")
+  internalReviewNotes String?   @map("internal_review_notes")
+  result              String?   @map("result")
+  createdBy           String    @default("FOUNDER") @map("created_by")
+  createdAt           DateTime  @default(now()) @map("created_at")
+  updatedAt           DateTime  @default(now()) @updatedAt @map("updated_at")
+  completedAt         DateTime? @map("completed_at")
+
+  decisions DecisionPackage[]
+
+  @@map("tasks")
+}
+
+model DecisionPackage {
+  id               String    @id
+  taskId           String?   @map("task_id")
+  task             Task?     @relation(fields: [taskId], references: [id])
+  agentId          String?   @map("agent_id")
+  agent            Agent?    @relation(fields: [agentId], references: [id])
+  decisionTitle    String    @map("decision_title")
+  reason           String
+  evidence         String?
+  riskLevel        String    @map("risk_level")
+  aiRecommendation String?   @map("ai_recommendation")
+  confidenceScore  Float?    @map("confidence_score")
+  optionsJson      String?   @map("options_json")
+  toolId           String?   @map("tool_id")
+  paramsJson       String?   @map("params_json")
+  status           String    @default("PENDING")
+  createdAt        DateTime  @default(now()) @map("created_at")
+  decidedAt        DateTime? @map("decided_at")
+
+  @@map("decision_packages")
+}
+
+model AuditLog {
+  id            Int      @id @default(autoincrement())
+  agentId       String?  @map("agent_id")
+  taskId        String?  @map("task_id")
+  toolId        String?  @map("tool_id")
+  action        String
+  inputPayload  String?  @map("input_payload")
+  resultSummary String?  @map("result_summary")
+  riskLevel     String?  @map("risk_level")
+  timestamp     DateTime @default(now())
+
+  @@map("audit_logs")
+}
+
+model KnowledgeChunk {
+  id         String   @id
+  documentId String   @map("document_id")
+  title      String
+  content    String
+  embedding  String   // JSON array of float, lưu dạng text để portable đa DB
+  source     String?  // vd: "manual", "upload:pricing.txt"
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  @@map("knowledge_chunks")
+}
+
+model CompanySettings {
+  id                  String   @id @default("singleton")
+  monthlyBudgetCapUsd Float?   @map("monthly_budget_cap_usd")
+  llmProvider         String?  @map("llm_provider")
+  geminiApiKey        String?  @map("gemini_api_key")
+  openaiApiKey        String?  @map("openai_api_key")
+  anthropicApiKey     String?  @map("anthropic_api_key")
+  customLlmUrl        String?  @map("custom_llm_url")
+  customLlmApiKey     String?  @map("custom_llm_api_key")
+  orchestratorModel   String?  @map("orchestrator_model")
+  temperature         Float?   @map("temperature")
+  updatedAt           DateTime @updatedAt @map("updated_at")
+
+  @@map("company_settings")
+}

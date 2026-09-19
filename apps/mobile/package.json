@@ -1,0 +1,10 @@
+{
+  "name": "@ai-opc/mobile",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Placeholder cho Giai đoạn 2 (React Native) — xem README.md trong thư mục này.",
+  "scripts": {
+    "ios": "echo 'Khởi tạo React Native project thật trước khi chạy — xem README.md' && exit 1",
+    "android": "echo 'Khởi tạo React Native project thật trước khi chạy — xem README.md' && exit 1"
+  }
+}

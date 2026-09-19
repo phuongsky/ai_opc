@@ -1,0 +1,23 @@
+{
+  "name": "ai-company-os",
+  "version": "0.1.0",
+  "private": true,
+  "description": "AI-Native One-Person Company (AI-OPC) — Company Operating System",
+  "packageManager": "pnpm@9.9.0",
+  "scripts": {
+    "dev:api": "pnpm --filter @ai-opc/api dev",
+    "dev:web": "pnpm --filter @ai-opc/web dev",
+    "dev:desktop": "pnpm --filter @ai-opc/desktop dev",
+    "build:web": "pnpm --filter @ai-opc/web build",
+    "build:desktop": "pnpm --filter @ai-opc/desktop build",
+    "db:generate": "pnpm --filter @ai-opc/api db:generate",
+    "db:migrate": "pnpm --filter @ai-opc/api db:migrate",
+    "db:seed": "pnpm --filter @ai-opc/api exec tsx src/db/seed.ts",
+    "bootstrap:founder": "pnpm --filter @ai-opc/api bootstrap:founder"
+  },
+  "workspaces": [
+    "apps/*",
+    "services/*",
+    "packages/*"
+  ]
+}
