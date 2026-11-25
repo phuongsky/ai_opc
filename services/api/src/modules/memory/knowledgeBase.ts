@@ -13,7 +13,7 @@
  */
 import { randomUUID } from "crypto";
 import { db } from "../../db/client";
-import { generateEmbedding } from "../../lib/llm/embeddings";
+import { generateEmbedding, generateEmbeddings } from "../../lib/llm/embeddings";
 import { chunkText } from "../../lib/chunkText";
 import { recordModelCost } from "../cost/costTracker";
 
@@ -38,7 +38,7 @@ export interface KnowledgeSearchResult {
   score: number;
 }
 
-/** Chia tài liệu thành chunk, tạo embedding từng chunk, lưu vào DB. */
+/** Chia tài liệu thành chunk, tạo embedding theo batch có throttling delay, lưu vào DB. */
 export async function ingestDocument(
   title: string,
   content: string,
@@ -49,20 +49,42 @@ export async function ingestDocument(
   let totalTokens = 0;
   let usedEngine: "remote" | "builtin" = "builtin";
 
-  for (let i = 0; i < chunks.length; i++) {
-    const { embedding, tokenCount, engine } = await generateEmbedding(chunks[i]);
-    if (engine === "remote") usedEngine = "remote";
-    totalTokens += tokenCount;
-    await db.knowledgeChunk.create({
-      data: {
-        id: `chunk_${randomUUID()}`,
-        documentId,
-        title: chunks.length > 1 ? `${title} (phần ${i + 1}/${chunks.length})` : title,
-        content: chunks[i],
-        embedding: JSON.stringify(embedding),
-        source: source ?? "manual",
-      },
-    });
+  if (chunks.length === 0) {
+    return { documentId, chunkCount: 0, engine: "builtin" };
+  }
+
+  // Tối ưu Batching & Throttling: Gom các chunk thành từng mảng nhỏ (tối đa 8 chunks/lần)
+  // và thêm delay 1500ms giữa các batch request để tránh kích hoạt Rate Limit 429
+  const BATCH_SIZE = 8;
+  const BATCH_DELAY_MS = 1500;
+
+  for (let b = 0; b < chunks.length; b += BATCH_SIZE) {
+    const batchChunks = chunks.slice(b, b + BATCH_SIZE);
+
+    // Thêm khoảng nghỉ an toàn giữa các batch request
+    if (b > 0) {
+      await new Promise((r) => setTimeout(r, BATCH_DELAY_MS));
+    }
+
+    const results = await generateEmbeddings(batchChunks);
+
+    for (let j = 0; j < batchChunks.length; j++) {
+      const idx = b + j;
+      const res = results[j] || { embedding: [], tokenCount: 0, engine: "builtin" };
+      if (res.engine === "remote") usedEngine = "remote";
+      totalTokens += res.tokenCount;
+
+      await db.knowledgeChunk.create({
+        data: {
+          id: `chunk_${randomUUID()}`,
+          documentId,
+          title: chunks.length > 1 ? `${title} (phần ${idx + 1}/${chunks.length})` : title,
+          content: batchChunks[j],
+          embedding: JSON.stringify(res.embedding),
+          source: source ?? "manual",
+        },
+      });
+    }
   }
 
   if (totalTokens > 0 && usedEngine === "remote") {

@@ -1,4 +1,3 @@
-import { PDFParse } from "pdf-parse";
 import mammoth from "mammoth";
 import * as XLSX from "xlsx";
 import {
@@ -92,6 +91,7 @@ export async function parseFileBuffer(
   try {
     if (extension === "pdf") {
       try {
+        const { PDFParse } = await import("pdf-parse");
         const parser = new PDFParse({ data: buffer });
         const res = await parser.getText();
         content = sanitizeExtractedText(res.text || "");

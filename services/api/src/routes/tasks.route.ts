@@ -4,6 +4,8 @@ import { db } from "../db/client";
 import { logAudit } from "../modules/audit/auditLogger";
 import { broadcastCompanyEvent } from "../ws/gateway";
 import { notifyTaskDeliverable } from "../modules/notifications/notifier";
+import { rbacService } from "../modules/rbac/rbacService";
+import type { AuthedRequest } from "../middleware/requireAuth";
 import type { RiskLevel } from "@ai-opc/shared";
 
 export const tasksRouter = Router();
@@ -14,14 +16,37 @@ const internalReviewSchema = z.object({
 });
 
 // GET /api/tasks — Danh sách tasks
-tasksRouter.get("/", async (req, res) => {
+tasksRouter.get("/", async (req: AuthedRequest, res) => {
   const status = (req.query.status as string) || undefined;
   const assignedTo = (req.query.assignedTo as string) || undefined;
+  const includeTrash = req.query.includeTrash === "true";
+
+  let statusFilter: any = undefined;
+  if (status) {
+    statusFilter = status;
+  } else if (!includeTrash) {
+    statusFilter = { not: "TRASH" };
+  }
+
+  const role = await rbacService.getUserRole(req);
+  let assignedToFilter: any = assignedTo ? assignedTo : undefined;
+
+  // Lọc thông minh theo ma trận RBAC: Nếu không phải Founder, chỉ lấy các Task gán cho Agent được cấp quyền
+  if (role !== "founder") {
+    const allowedAgentIds = await rbacService.getAllowedAgentIdsForRole(role);
+    if (assignedTo) {
+      if (!allowedAgentIds.includes(assignedTo)) {
+        return res.json([]);
+      }
+    } else {
+      assignedToFilter = { in: allowedAgentIds };
+    }
+  }
 
   const tasks = await db.task.findMany({
     where: {
-      status: status ? status : undefined,
-      assignedTo: assignedTo ? assignedTo : undefined,
+      status: statusFilter,
+      assignedTo: assignedToFilter,
     },
     orderBy: { createdAt: "desc" },
   });
@@ -65,8 +90,114 @@ tasksRouter.get("/", async (req, res) => {
   res.json(tasks);
 });
 
+// GET /api/tasks/trash/list — Danh sách các task trong thùng rác
+tasksRouter.get("/trash/list", async (req: AuthedRequest, res) => {
+  const role = await rbacService.getUserRole(req);
+  const where: any = { status: "TRASH" };
+
+  if (role !== "founder") {
+    const allowedAgentIds = await rbacService.getAllowedAgentIdsForRole(role);
+    where.assignedTo = { in: allowedAgentIds };
+  }
+
+  const tasks = await db.task.findMany({
+    where,
+    include: {
+      agent: true,
+      decisions: { orderBy: { id: "desc" } },
+    },
+    orderBy: { updatedAt: "desc" },
+  });
+  res.json(tasks);
+});
+
+// GET /api/tasks/trash/count — Số lượng task trong thùng rác
+tasksRouter.get("/trash/count", async (req: AuthedRequest, res) => {
+  const role = await rbacService.getUserRole(req);
+  const where: any = { status: "TRASH" };
+
+  if (role !== "founder") {
+    const allowedAgentIds = await rbacService.getAllowedAgentIdsForRole(role);
+    where.assignedTo = { in: allowedAgentIds };
+  }
+
+  const count = await db.task.count({ where });
+  res.json({ count });
+});
+
+// POST /api/tasks/trash/empty — Dọn sạch toàn bộ thùng rác ngay lập tức
+tasksRouter.post("/trash/empty", async (_req, res) => {
+  const trashTasks = await db.task.findMany({
+    where: { status: "TRASH" },
+    select: { id: true },
+  });
+  const taskIds = trashTasks.map((t: any) => t.id);
+
+  if (taskIds.length > 0) {
+    await db.decisionPackage.deleteMany({
+      where: { taskId: { in: taskIds } },
+    });
+    await db.auditLog.deleteMany({
+      where: { taskId: { in: taskIds } },
+    });
+    await db.task.deleteMany({
+      where: { id: { in: taskIds } },
+    });
+  }
+
+  broadcastCompanyEvent({ type: "TASK_UPDATED", payload: { action: "TRASH_EMPTIED", count: taskIds.length } });
+  res.json({ status: "OK", deletedCount: taskIds.length });
+});
+
+// POST /api/tasks/trash/all — Chuyển toàn bộ task hiện có vào thùng rác
+tasksRouter.post("/trash/all", async (req: AuthedRequest, res) => {
+  try {
+    const role = await rbacService.getUserRole(req);
+    const where: any = { status: { not: "TRASH" } };
+
+    if (role !== "founder") {
+      const allowedAgentIds = await rbacService.getAllowedAgentIdsForRole(role);
+      where.assignedTo = { in: allowedAgentIds };
+    }
+
+    const activeTasks = await db.task.findMany({
+      where,
+      select: { id: true, assignedTo: true, riskLevel: true },
+    });
+
+    if (activeTasks.length === 0) {
+      return res.json({ status: "OK", count: 0, message: "Không có tác vụ nào để chuyển vào thùng rác." });
+    }
+
+    const taskIds = activeTasks.map((t: any) => t.id);
+
+    const updated = await db.task.updateMany({
+      where: { id: { in: taskIds } },
+      data: {
+        status: "TRASH",
+        updatedAt: new Date(),
+      },
+    });
+
+    await logAudit({
+      action: "ALL_TASKS_MOVED_TO_TRASH",
+      resultSummary: `Đã chuyển toàn bộ ${updated.count} tác vụ vào Thùng rác (Tự động xóa sau 30 ngày)`,
+      riskLevel: "R2",
+    });
+
+    broadcastCompanyEvent({
+      type: "TASK_UPDATED",
+      payload: { action: "ALL_TASKS_MOVED_TO_TRASH", count: updated.count },
+    });
+
+    res.json({ status: "OK", count: updated.count });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || "Lỗi khi chuyển toàn bộ task vào thùng rác" });
+  }
+});
+
 // GET /api/tasks/:id — Chi tiết 1 task
-tasksRouter.get("/:id", async (req, res) => {
+tasksRouter.get("/:id", async (req: AuthedRequest, res) => {
   const { id } = req.params;
   const task = await db.task.findUnique({
     where: { id },
@@ -78,6 +209,14 @@ tasksRouter.get("/:id", async (req, res) => {
 
   if (!task) {
     return res.status(404).json({ error: "Task không tồn tại." });
+  }
+
+  const role = await rbacService.getUserRole(req);
+  if (role !== "founder" && task.assignedTo) {
+    const canView = await rbacService.canRoleViewAgent(role, task.assignedTo);
+    if (!canView) {
+      return res.status(403).json({ error: "Bạn không có quyền truy cập tác vụ của AI Agent này theo cấu hình RBAC." });
+    }
   }
 
   if (!task.result) {
@@ -106,7 +245,7 @@ tasksRouter.get("/:id", async (req, res) => {
 });
 
 // POST /api/tasks/:id/internal-review — Founder / Manager đánh giá nội bộ
-tasksRouter.post("/:id/internal-review", async (req, res) => {
+tasksRouter.post("/:id/internal-review", async (req: AuthedRequest, res) => {
   const { id } = req.params;
   const parsed = internalReviewSchema.safeParse(req.body);
 
@@ -122,6 +261,14 @@ tasksRouter.post("/:id/internal-review", async (req, res) => {
   const task = await db.task.findUnique({ where: { id } });
   if (!task) {
     return res.status(404).json({ error: "Task không tồn tại." });
+  }
+
+  const role = await rbacService.getUserRole(req);
+  if (role !== "founder" && task.assignedTo) {
+    const canControl = await rbacService.canRoleControlAgent(role, task.assignedTo);
+    if (!canControl) {
+      return res.status(403).json({ error: "Bạn không có quyền đánh giá nội bộ tác vụ của AI Agent này theo cấu hình RBAC." });
+    }
   }
 
   if (action === "approve") {
@@ -213,9 +360,17 @@ tasksRouter.post("/:id/internal-review", async (req, res) => {
  * từ ESCALATED/BLOCKED — không cho requeue task đang RUNNING/AWAITING_APPROVAL
  * để tránh đá văng 1 tiến trình đang thực sự chạy dở.
  */
-tasksRouter.post("/:id/requeue", async (req, res) => {
+tasksRouter.post("/:id/requeue", async (req: AuthedRequest, res) => {
   const task = await db.task.findUnique({ where: { id: req.params.id } });
   if (!task) return res.status(404).json({ error: "Task không tồn tại" });
+
+  const role = await rbacService.getUserRole(req);
+  if (role !== "founder" && task.assignedTo) {
+    const canControl = await rbacService.canRoleControlAgent(role, task.assignedTo);
+    if (!canControl) {
+      return res.status(403).json({ error: "Bạn không có quyền requeue tác vụ của AI Agent này theo cấu hình RBAC." });
+    }
+  }
 
   if (!["ESCALATED", "BLOCKED"].includes(task.status)) {
     return res.status(400).json({
@@ -243,12 +398,20 @@ tasksRouter.post("/:id/requeue", async (req, res) => {
  * POST /api/tasks/:id/notify — Gửi thông báo kết quả bàn giao (Agent Output)
  * qua cả 2 kênh Telegram và Email cho Founder.
  */
-tasksRouter.post("/:id/notify", async (req, res) => {
+tasksRouter.post("/:id/notify", async (req: AuthedRequest, res) => {
   const { id } = req.params;
   const task = await db.task.findUnique({ where: { id } });
 
   if (!task) {
     return res.status(404).json({ error: "Task không tồn tại" });
+  }
+
+  const role = await rbacService.getUserRole(req);
+  if (role !== "founder" && task.assignedTo) {
+    const canView = await rbacService.canRoleViewAgent(role, task.assignedTo);
+    if (!canView) {
+      return res.status(403).json({ error: "Bạn không có quyền truy cập tác vụ của AI Agent này." });
+    }
   }
 
   let deliverable = task.result;
@@ -297,7 +460,7 @@ const updateDeliverableSchema = z.object({
 /**
  * PATCH /api/tasks/:id/deliverable — Chỉnh sửa và lưu lại nội dung Kết quả bàn giao (Deliverable)
  */
-tasksRouter.patch("/:id/deliverable", async (req, res) => {
+tasksRouter.patch("/:id/deliverable", async (req: AuthedRequest, res) => {
   const { id } = req.params;
   const parsed = updateDeliverableSchema.safeParse(req.body);
 
@@ -311,6 +474,14 @@ tasksRouter.patch("/:id/deliverable", async (req, res) => {
   const task = await db.task.findUnique({ where: { id } });
   if (!task) {
     return res.status(404).json({ error: "Task không tồn tại" });
+  }
+
+  const role = await rbacService.getUserRole(req);
+  if (role !== "founder" && task.assignedTo) {
+    const canControl = await rbacService.canRoleControlAgent(role, task.assignedTo);
+    if (!canControl) {
+      return res.status(403).json({ error: "Bạn không có quyền chỉnh sửa kết quả bàn giao của AI Agent này theo cấu hình RBAC." });
+    }
   }
 
   const updatedTask = await db.task.update({
@@ -331,6 +502,110 @@ tasksRouter.patch("/:id/deliverable", async (req, res) => {
   broadcastCompanyEvent({ type: "TASK_UPDATED", payload: updatedTask });
 
   return res.json({ status: "OK", task: updatedTask });
+});
+
+/**
+ * POST /api/tasks/:id/trash — Chuyển task vào thùng rác (Tự động xóa sau 30 ngày)
+ */
+tasksRouter.post("/:id/trash", async (req: AuthedRequest, res) => {
+  const { id } = req.params;
+  const task = await db.task.findUnique({ where: { id } });
+  if (!task) {
+    return res.status(404).json({ error: "Task không tồn tại." });
+  }
+
+  const role = await rbacService.getUserRole(req);
+  if (role !== "founder" && task.assignedTo) {
+    const canControl = await rbacService.canRoleControlAgent(role, task.assignedTo);
+    if (!canControl) {
+      return res.status(403).json({ error: "Bạn không có quyền chuyển tác vụ này vào thùng rác theo cấu hình RBAC." });
+    }
+  }
+
+  const updatedTask = await db.task.update({
+    where: { id },
+    data: {
+      status: "TRASH",
+      updatedAt: new Date(),
+    },
+  });
+
+  await logAudit({
+    agentId: task.assignedTo,
+    taskId: task.id,
+    action: "TASK_MOVED_TO_TRASH",
+    resultSummary: `Task #${task.id.slice(0, 8)} đã được chuyển vào Thùng rác (Tự động xóa sau 30 ngày)`,
+    riskLevel: (task.riskLevel || "R1") as RiskLevel,
+  });
+
+  broadcastCompanyEvent({ type: "TASK_UPDATED", payload: updatedTask });
+  res.json({ status: "OK", task: updatedTask });
+});
+
+/**
+ * POST /api/tasks/:id/restore — Khôi phục task từ thùng rác về bảng Kanban
+ */
+tasksRouter.post("/:id/restore", async (req: AuthedRequest, res) => {
+  const { id } = req.params;
+  const task = await db.task.findUnique({ where: { id } });
+  if (!task) {
+    return res.status(404).json({ error: "Task không tồn tại." });
+  }
+
+  const role = await rbacService.getUserRole(req);
+  if (role !== "founder" && task.assignedTo) {
+    const canControl = await rbacService.canRoleControlAgent(role, task.assignedTo);
+    if (!canControl) {
+      return res.status(403).json({ error: "Bạn không có quyền khôi phục tác vụ này theo cấu hình RBAC." });
+    }
+  }
+
+  const restoredStatus = task.completedAt ? "COMPLETED" : (task.assignedTo ? "ASSIGNED" : "NEW");
+
+  const updatedTask = await db.task.update({
+    where: { id },
+    data: {
+      status: restoredStatus,
+      updatedAt: new Date(),
+    },
+  });
+
+  await logAudit({
+    agentId: task.assignedTo,
+    taskId: task.id,
+    action: "TASK_RESTORED_FROM_TRASH",
+    resultSummary: `Khôi phục task #${task.id.slice(0, 8)} từ Thùng rác về trạng thái ${restoredStatus}`,
+    riskLevel: (task.riskLevel || "R1") as RiskLevel,
+  });
+
+  broadcastCompanyEvent({ type: "TASK_UPDATED", payload: updatedTask });
+  res.json({ status: "OK", task: updatedTask });
+});
+
+/**
+ * DELETE /api/tasks/:id — Xóa vĩnh viễn task khỏi hệ thống
+ */
+tasksRouter.delete("/:id", async (req: AuthedRequest, res) => {
+  const { id } = req.params;
+  const task = await db.task.findUnique({ where: { id } });
+  if (!task) {
+    return res.status(404).json({ error: "Task không tồn tại." });
+  }
+
+  const role = await rbacService.getUserRole(req);
+  if (role !== "founder" && task.assignedTo) {
+    const canControl = await rbacService.canRoleControlAgent(role, task.assignedTo);
+    if (!canControl) {
+      return res.status(403).json({ error: "Bạn không có quyền xóa vĩnh viễn tác vụ này theo cấu hình RBAC." });
+    }
+  }
+
+  await db.decisionPackage.deleteMany({ where: { taskId: id } });
+  await db.auditLog.deleteMany({ where: { taskId: id } });
+  await db.task.delete({ where: { id } });
+
+  broadcastCompanyEvent({ type: "TASK_UPDATED", payload: { id, deleted: true } });
+  res.json({ status: "OK", message: `Đã xóa vĩnh viễn task #${id}` });
 });
 
 

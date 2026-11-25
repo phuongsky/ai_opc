@@ -17,6 +17,7 @@ import {
   verifyTotpCode,
 } from "../modules/auth/twoFactorService";
 import { verifyGoogleIdTokenAndLogin } from "../modules/auth/googleAuthService";
+import { getAuthChannelsConfig } from "../modules/auth/authChannelsConfig";
 import {
   handleZaloWebhook,
   checkZaloSessionStatus,
@@ -24,6 +25,8 @@ import {
   clearAllZaloSessions,
   type ZaloAuthPayload,
 } from "../modules/auth/zaloAuthService";
+import { startZaloInboundListener, stopZaloInboundListener } from "../modules/notifications/zaloInbound";
+import { clearZaloApiCache } from "../modules/notifications/zalo";
 import { requireAuth, type AuthedRequest } from "../middleware/requireAuth";
 import { logAudit } from "../modules/audit/auditLogger";
 
@@ -52,9 +55,12 @@ function clearSessionCookie(res: import("express").Response) {
 // ---- GET /api/auth/config -----------------------------------------------
 // Trả về cấu hình client công khai (vd: Google Client ID)
 authRouter.get("/config", (_req, res) => {
+  const config = getAuthChannelsConfig();
   res.json({
-    googleClientId: env.googleClientId,
-    googleConfigured: Boolean(env.googleClientId),
+    googleLoginEnabled: config.googleLoginEnabled,
+    googleClientId: config.googleLoginEnabled ? config.googleClientId : "",
+    googleConfigured: config.googleConfigured,
+    zaloLoginEnabled: config.zaloLoginEnabled,
   });
 });
 
@@ -103,6 +109,9 @@ authRouter.all(["/zalo/webhook", "/webhook"], async (req, res) => {
     if (result.activeSession?.token) {
       setSessionCookie(res, result.activeSession.token);
     }
+    void startZaloInboundListener().catch((e) =>
+      console.warn("[ZaloListener] Tự động khởi động listener sau webhook thất bại:", e)
+    );
     return res.status(200).json(result.data);
   } catch (err: any) {
     console.error("[Zalo Webhook Error]:", err);
@@ -132,6 +141,9 @@ authRouter.post(["/zalo/manual-login", "/manual-login"], async (req, res) => {
     const payload = req.body as ZaloAuthPayload;
     const result = await handleZaloWebhook(payload);
     setSessionCookie(res, result.activeSession.token);
+    void startZaloInboundListener().catch((e) =>
+      console.warn("[ZaloListener] Tự động khởi động listener sau manual-login thất bại:", e)
+    );
     res.json({
       status: "OK",
       token: result.activeSession.token,
@@ -149,6 +161,8 @@ authRouter.get(["/zalo/status", "/status"], (_req, res) => {
   res.json(getZaloAuthStatus());
 });
 
+
+import { getAccountRoleByEmail } from "../modules/auth/accountService";
 
 // ---- POST /api/auth/login -----------------------------------------------
 // Bước 1: kiểm tra email + password.
@@ -168,9 +182,10 @@ authRouter.post("/login", async (req, res) => {
     return res.json({ status: "2FA_REQUIRED", pendingToken });
   }
 
-  const token = issueSessionToken(founder, false);
+  const role = await getAccountRoleByEmail(founder.email);
+  const token = issueSessionToken(founder, false, role);
   setSessionCookie(res, token);
-  res.json({ status: "OK", token, totpEnabled: false });
+  res.json({ status: "OK", token, role, totpEnabled: false });
 });
 
 // ---- POST /api/auth/verify-2fa -----------------------------------------
@@ -191,9 +206,10 @@ authRouter.post("/verify-2fa", async (req, res) => {
     if (!founder?.totpSecret || !verifyTotpCode(founder.totpSecret, code))
       return res.status(401).json({ error: "Mã 2FA không đúng." });
 
-    const token = issueSessionToken(founder, true);
+    const role = await getAccountRoleByEmail(founder.email);
+    const token = issueSessionToken(founder, true, role);
     setSessionCookie(res, token);
-    res.json({ status: "OK", token });
+    res.json({ status: "OK", token, role });
   } catch {
     res
       .status(401)
@@ -235,9 +251,11 @@ authRouter.post("/enable-2fa", requireAuth, async (req: AuthedRequest, res) => {
 // ---- GET /api/auth/me --------------------------------------------------
 authRouter.get("/me", requireAuth, async (req: AuthedRequest, res) => {
   const founder = await db.founder.findUnique({ where: { id: req.founder!.sub } });
+  const role = req.founder?.role || (await getAccountRoleByEmail(req.founder!.email));
   res.json({
     id: req.founder!.sub,
     email: req.founder!.email,
+    role,
     totpEnabled: founder?.totpEnabled ?? false,
   });
 });
@@ -246,6 +264,8 @@ authRouter.get("/me", requireAuth, async (req: AuthedRequest, res) => {
 authRouter.all(["/logout", "/zalo/logout"], async (_req, res) => {
   clearSessionCookie(res);
   clearAllZaloSessions();
+  clearZaloApiCache();
+  stopZaloInboundListener();
   await logAudit({
     action: "FOUNDER_LOGOUT",
     resultSummary: "Founder đăng xuất: Đã xóa toàn bộ session JWT, cookie và phiên Zalo.",

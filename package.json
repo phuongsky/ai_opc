@@ -9,6 +9,7 @@
     "dev:web": "pnpm --filter @ai-opc/web dev",
     "dev:desktop": "pnpm --filter @ai-opc/desktop dev",
     "build:web": "pnpm --filter @ai-opc/web build",
+    "build:sidecar": "node services/api/scripts/bundle.js && npx --yes @yao-pkg/pkg services/api/dist/bundle.js --target node22-win-x64 --output apps/desktop/src-tauri/binaries/api-server-x86_64-pc-windows-msvc.exe",
     "build:desktop": "pnpm --filter @ai-opc/desktop build",
     "db:generate": "pnpm --filter @ai-opc/api db:generate",
     "db:migrate": "pnpm --filter @ai-opc/api db:migrate",
@@ -19,5 +20,8 @@
     "apps/*",
     "services/*",
     "packages/*"
-  ]
+  ],
+  "devDependencies": {
+    "esbuild": "^0.28.2"
+  }
 }

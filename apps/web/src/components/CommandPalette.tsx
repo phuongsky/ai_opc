@@ -21,8 +21,43 @@ import {
   ExternalLink,
   UserPlus,
 } from "lucide-react";
-import { sendFounderCommand } from "@/lib/api";
+import { sendFounderCommand, fetchMe, fetchRbacPermissions } from "@/lib/api";
 import { useI18n } from "@/context/I18nContext";
+import { useCompanySocket } from "@/hooks/useCompanySocket";
+import type { RbacRoleId, RbacCommandId, RbacPermissionsMatrix } from "@ai-opc/shared";
+
+function resolveCommandId(cmdStr: string): RbacCommandId {
+  const trimmed = cmdStr.trim().toLowerCase();
+  if (trimmed.startsWith("/hire")) return "hire";
+  if (trimmed.startsWith("/report")) return "report";
+  if (trimmed.startsWith("/do")) return "do";
+  if (trimmed.startsWith("/goal")) return "goal";
+  if (trimmed.startsWith("/status")) return "status";
+  if (trimmed.startsWith("/settings")) return "settings";
+  if (trimmed.startsWith("/knowledge")) return "knowledge";
+  if (trimmed.startsWith("/audit")) return "audit";
+  if (trimmed.startsWith("/security")) return "security";
+  if (trimmed.startsWith("/stop")) return "stop";
+  if (trimmed.startsWith("/plan")) return "plan";
+  if (trimmed.startsWith("/analyze")) return "analyze";
+  return "do";
+}
+
+function isCommandAllowed(
+  cmd: string,
+  role: RbacRoleId,
+  matrix: RbacPermissionsMatrix | null
+): boolean {
+  if (role === "founder") return true;
+  const cmdId = resolveCommandId(cmd);
+  if (!matrix || !matrix.commandPermissions) {
+    if (role === "viewer") return ["report", "status", "audit"].includes(cmdId);
+    if (role === "operator") return ["report", "do", "status", "knowledge", "security"].includes(cmdId);
+    if (role === "manager") return !["settings", "stop"].includes(cmdId);
+    return true;
+  }
+  return Boolean(matrix.commandPermissions[role]?.[cmdId]);
+}
 
 function getSuggestions(locale: "en" | "vi"): { cmd: string; label: string; icon: React.ReactNode; danger?: boolean; isNav?: boolean }[] {
   if (locale === "vi") {
@@ -137,9 +172,57 @@ export function CommandPalette() {
     return () => document.removeEventListener("keydown", onKeyDown);
   }, [result]);
 
+  const [userRole, setUserRole] = useState<RbacRoleId>("founder");
+  const [rbacMatrix, setRbacMatrix] = useState<RbacPermissionsMatrix | null>(null);
+  const { lastEvent } = useCompanySocket();
+
+  // Load User Role & RBAC permissions on mount & when opened
+  useEffect(() => {
+    let mounted = true;
+    fetchMe()
+      .then((me) => {
+        if (mounted && me?.role) {
+          setUserRole(me.role as RbacRoleId);
+        }
+      })
+      .catch(() => {});
+
+    fetchRbacPermissions()
+      .then((matrix) => {
+        if (mounted) setRbacMatrix(matrix);
+      })
+      .catch(() => {});
+
+    return () => {
+      mounted = false;
+    };
+  }, [open]);
+
+  // Real-time synchronization when RBAC matrix is updated
+  useEffect(() => {
+    if (lastEvent && lastEvent.type === "RBAC_PERMISSIONS_UPDATED" && lastEvent.payload) {
+      setRbacMatrix(lastEvent.payload as RbacPermissionsMatrix);
+    }
+  }, [lastEvent]);
+
+  const filteredSuggestions = suggestions.filter((s) =>
+    isCommandAllowed(s.cmd, userRole, rbacMatrix)
+  );
+
   async function run(command: string) {
     const trimmed = command.trim();
     if (!trimmed) return;
+
+    // RBAC client-side permission enforcement
+    if (!isCommandAllowed(trimmed, userRole, rbacMatrix)) {
+      setResult({
+        error:
+          locale === "vi"
+            ? `Tài khoản với vai trò "${userRole}" không có quyền thực hiện lệnh "${trimmed}" theo phân quyền RBAC.`
+            : `Your account role "${userRole}" is not permitted to execute command "${trimmed}" under current RBAC settings.`,
+      });
+      return;
+    }
 
     // Fast client-side navigation
     const targetRoute = NAVIGATION_ROUTES[trimmed.toLowerCase()];
@@ -393,37 +476,58 @@ export function CommandPalette() {
         ) : (
           /* Suggestions List */
           <div className="p-2 text-xs sm:text-sm">
-            <div className="px-3 py-1.5 text-[11px] font-medium text-zinc-500 uppercase tracking-wider">
-              {t.cockpit.quickCommands}
+            <div className="px-3 py-1.5 flex items-center justify-between text-[11px] font-medium text-zinc-500 uppercase tracking-wider">
+              <span>{t.cockpit.quickCommands}</span>
+              <span
+                className={`rounded-full px-2 py-0.5 text-[10px] font-mono border ${
+                  userRole === "founder"
+                    ? "bg-amber-500/10 text-amber-300 border-amber-500/30"
+                    : userRole === "manager"
+                    ? "bg-indigo-500/10 text-indigo-300 border-indigo-500/30"
+                    : userRole === "operator"
+                    ? "bg-emerald-500/10 text-emerald-300 border-emerald-500/30"
+                    : "bg-zinc-800 text-zinc-400 border-zinc-700"
+                }`}
+              >
+                Role: {userRole}
+              </span>
             </div>
-            <ul className="space-y-0.5">
-              {suggestions.map((s) => (
-                <li key={s.cmd}>
-                  <button
-                    disabled={busy}
-                    onClick={() => {
-                      if (s.cmd.endsWith(" ")) {
-                        setInput(s.cmd);
-                      } else {
-                        run(s.cmd);
-                      }
-                    }}
-                    className={`flex w-full items-center justify-between gap-3 rounded-lg px-3 py-2 text-left transition-colors hover:bg-white/5 ${
-                      s.danger ? "text-danger" : "text-zinc-300 hover:text-zinc-100"
-                    }`}
-                  >
-                    <div className="flex items-center gap-2.5 min-w-0">
-                      {s.icon}
-                      <span className="font-mono font-medium">{s.cmd.trim() || s.cmd}</span>
-                    </div>
-                    <span className="text-[11px] text-zinc-500 truncate flex items-center gap-1">
-                      {s.label}
-                      {s.isNav && <ExternalLink className="w-3 h-3 text-zinc-600 inline" />}
-                    </span>
-                  </button>
-                </li>
-              ))}
-            </ul>
+            {filteredSuggestions.length > 0 ? (
+              <ul className="space-y-0.5">
+                {filteredSuggestions.map((s) => (
+                  <li key={s.cmd}>
+                    <button
+                      disabled={busy}
+                      onClick={() => {
+                        if (s.cmd.endsWith(" ")) {
+                          setInput(s.cmd);
+                        } else {
+                          run(s.cmd);
+                        }
+                      }}
+                      className={`flex w-full items-center justify-between gap-3 rounded-lg px-3 py-2 text-left transition-colors hover:bg-white/5 ${
+                        s.danger ? "text-danger" : "text-zinc-300 hover:text-zinc-100"
+                      }`}
+                    >
+                      <div className="flex items-center gap-2.5 min-w-0">
+                        {s.icon}
+                        <span className="font-mono font-medium">{s.cmd.trim() || s.cmd}</span>
+                      </div>
+                      <span className="text-[11px] text-zinc-500 truncate flex items-center gap-1">
+                        {s.label}
+                        {s.isNav && <ExternalLink className="w-3 h-3 text-zinc-600 inline" />}
+                      </span>
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            ) : (
+              <div className="py-6 text-center text-xs text-zinc-500">
+                {locale === "vi"
+                  ? `Không có gợi ý lệnh nào khả dụng cho vai trò "${userRole}".`
+                  : `No command suggestions available for role "${userRole}".`}
+              </div>
+            )}
           </div>
         )}
       </div>

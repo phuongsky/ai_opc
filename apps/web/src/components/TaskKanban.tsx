@@ -30,6 +30,8 @@ import {
   SlidersHorizontal,
   Bot,
   Zap,
+  ShieldAlert,
+  Trash2,
 } from "lucide-react";
 import type { Task, RiskLevel, Agent } from "@ai-opc/shared";
 import { cleanDeliverableText } from "@ai-opc/shared";
@@ -39,8 +41,12 @@ import {
   requeueTask,
   ingestKnowledgeDoc,
   sendTaskDeliverableNotification,
+  moveTaskToTrash,
+  moveAllTasksToTrash,
+  fetchTrashCount,
 } from "@/lib/api";
 import { DeliverableEditModal } from "./DeliverableEditModal";
+import { TaskTrashModal } from "./TaskTrashModal";
 import { useI18n } from "@/context/I18nContext";
 
 
@@ -118,6 +124,12 @@ const STATUS_VISUALS: Record<
     bg: "bg-emerald-500/10",
     border: "border-emerald-500/20",
   },
+  TRASH: {
+    icon: <Trash2 className="h-3.5 w-3.5" />,
+    color: "text-rose-400",
+    bg: "bg-rose-500/10",
+    border: "border-rose-500/20",
+  },
 };
 
 const RISK_VISUALS: Record<
@@ -159,6 +171,7 @@ const COLUMN_ORDER: TaskStatus[] = [
 ];
 
 const REQUEUEABLE: TaskStatus[] = ["BLOCKED", "ESCALATED"];
+const TRASHABLE_ON_CARD: TaskStatus[] = ["BLOCKED", "ESCALATED"];
 
 function formatDateTime(iso: string, locale: string = "en") {
   if (!iso) return "-";
@@ -220,6 +233,10 @@ function TaskCard({
   const { t, locale } = useI18n();
   const [expanded, setExpanded] = useState(true);
   const [requeuing, setRequeuing] = useState(false);
+  const [showTrashConfirm, setShowTrashConfirm] = useState(false);
+  const [isMovingToTrash, setIsMovingToTrash] = useState(false);
+  const [trashError, setTrashError] = useState("");
+
   const visual = STATUS_VISUALS[task.status] ?? STATUS_VISUALS.NEW;
   const statusLabel = t.kanban.statuses[task.status] || task.status;
   const riskVisual = RISK_VISUALS[task.riskLevel] ?? RISK_VISUALS.R0;
@@ -239,6 +256,20 @@ function TaskCard({
       alert(err instanceof Error ? err.message : (locale === "vi" ? "Requeue thất bại" : "Requeue failed"));
     } finally {
       setRequeuing(false);
+    }
+  };
+
+  const handleMoveToTrash = async (e: React.MouseEvent) => {
+    e.stopPropagation();
+    setIsMovingToTrash(true);
+    setTrashError("");
+    try {
+      await moveTaskToTrash(task.id);
+      setShowTrashConfirm(false);
+      onRequeued?.();
+    } catch (err) {
+      setTrashError(err instanceof Error ? err.message : (locale === "vi" ? "Chuyển vào thùng rác thất bại" : "Failed to move to trash"));
+      setIsMovingToTrash(false);
     }
   };
 
@@ -299,6 +330,22 @@ function TaskCard({
         </div>
 
         <div className="flex items-center gap-1.5 shrink-0">
+          {/* Trash button on card if BLOCKED or ESCALATED */}
+          {TRASHABLE_ON_CARD.includes(task.status) && (
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                setShowTrashConfirm(true);
+              }}
+              disabled={isMovingToTrash}
+              title={t.taskDetail.trashTooltip}
+              className="rounded p-1 text-zinc-400 hover:bg-rose-500/15 hover:text-rose-400 transition-colors disabled:opacity-50 cursor-pointer"
+            >
+              <Trash2 className="h-3.5 w-3.5 text-rose-400/80 hover:text-rose-300" />
+            </button>
+          )}
+
           {/* Requeue button on card if BLOCKED or ESCALATED */}
           {REQUEUEABLE.includes(task.status) && task.assignedTo && (
             <button
@@ -329,6 +376,68 @@ function TaskCard({
           className="ml-4 mt-2 border-t border-border/50 pt-2 space-y-1.5"
         >
           {children}
+        </div>
+      )}
+
+      {/* Confirmation Dialog: Move Task to Trash */}
+      {showTrashConfirm && (
+        <div
+          className="fixed inset-0 z-60 flex items-center justify-center bg-black/80 p-4 backdrop-blur-sm"
+          onClick={(e) => {
+            e.stopPropagation();
+            setShowTrashConfirm(false);
+          }}
+        >
+          <div
+            className="w-full max-w-md rounded-2xl border border-rose-500/30 bg-panel p-6 shadow-2xl space-y-4 text-left cursor-default"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center gap-3 text-rose-400">
+              <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-rose-500/10 border border-rose-500/20">
+                <Trash2 className="h-5 w-5" />
+              </div>
+              <div>
+                <h3 className="text-base font-semibold text-zinc-100">{t.taskDetail.trashConfirmTitle}</h3>
+                <p className="text-xs text-zinc-400">
+                  {locale === "vi" ? "Tự động xóa vĩnh viễn sau 30 ngày" : "Auto deleted after 30 days"}
+                </p>
+              </div>
+            </div>
+
+            <p className="text-sm text-zinc-300">
+              {locale === "vi"
+                ? `Tác vụ "${task.title}" sẽ được chuyển vào Thùng rác và ẩn khỏi bảng Kanban. Bạn có thể khôi phục hoặc xóa ngay bất kỳ lúc nào trong Thùng rác.`
+                : `Task "${task.title}" will be moved to Trash and hidden from the Kanban board. You can restore or delete it immediately at any time.`}
+            </p>
+
+            {trashError && (
+              <p className="text-xs text-rose-400 bg-rose-500/10 border border-rose-500/20 rounded-lg p-2">
+                {trashError}
+              </p>
+            )}
+
+            <div className="flex items-center justify-end gap-2 pt-2">
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setShowTrashConfirm(false);
+                }}
+                className="rounded-xl border border-border px-4 py-2 text-xs font-medium text-zinc-300 hover:bg-white/5 transition-colors cursor-pointer"
+              >
+                {t.common.cancel || "Hủy"}
+              </button>
+              <button
+                type="button"
+                onClick={handleMoveToTrash}
+                disabled={isMovingToTrash}
+                className="inline-flex items-center gap-1.5 rounded-xl bg-rose-600 hover:bg-rose-500 px-4 py-2 text-xs font-medium text-white shadow-sm transition-colors cursor-pointer disabled:opacity-50"
+              >
+                {isMovingToTrash ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Trash2 className="h-3.5 w-3.5" />}
+                <span>{t.taskDetail.moveToTrash}</span>
+              </button>
+            </div>
+          </div>
         </div>
       )}
     </div>
@@ -368,6 +477,24 @@ function TaskDetailModal({
   // States for Deliverable Editing via Modal
   const [taskOverride, setTaskOverride] = useState<string | null>(null);
   const [isEditModalOpen, setIsEditModalOpen] = useState(false);
+
+  // States for Trash action
+  const [showTrashConfirm, setShowTrashConfirm] = useState(false);
+  const [isMovingToTrash, setIsMovingToTrash] = useState(false);
+  const [trashError, setTrashError] = useState("");
+
+  const handleMoveToTrash = async () => {
+    setIsMovingToTrash(true);
+    setTrashError("");
+    try {
+      await moveTaskToTrash(task.id);
+      onTaskUpdated();
+      onClose();
+    } catch (err) {
+      setTrashError(err instanceof Error ? err.message : "Chuyển vào thùng rác thất bại.");
+      setIsMovingToTrash(false);
+    }
+  };
 
   const visual = STATUS_VISUALS[task.status] ?? STATUS_VISUALS.NEW;
   const statusLabel = t.kanban.statuses[task.status] || task.status;
@@ -546,13 +673,23 @@ function TaskDetailModal({
             <h2 className="text-lg font-semibold text-zinc-100">{task.title}</h2>
           </div>
 
-          <button
-            type="button"
-            onClick={onClose}
-            className="rounded-lg p-1.5 text-zinc-400 hover:bg-white/10 hover:text-zinc-200 shrink-0 cursor-pointer transition-colors"
-          >
-            <X className="h-5 w-5" />
-          </button>
+          <div className="flex items-center gap-1 shrink-0">
+            <button
+              type="button"
+              onClick={() => setShowTrashConfirm(true)}
+              className="rounded-lg p-1.5 text-zinc-400 hover:bg-rose-500/15 hover:text-rose-400 transition-colors cursor-pointer"
+              title={t.taskDetail.trashTooltip}
+            >
+              <Trash2 className="h-4 w-4" />
+            </button>
+            <button
+              type="button"
+              onClick={onClose}
+              className="rounded-lg p-1.5 text-zinc-400 hover:bg-white/10 hover:text-zinc-200 transition-colors cursor-pointer"
+            >
+              <X className="h-5 w-5" />
+            </button>
+          </div>
         </div>
 
         {/* 2-Block Parallel Grid: Objective (Left) & Deliverable (Right) */}
@@ -718,6 +855,38 @@ function TaskDetailModal({
                     <Edit3 className="h-3 w-3" />
                     <span>{t.taskDetail.composeOutput}</span>
                   </button>
+                </div>
+              ) : task.status === "BLOCKED" || task.status === "ESCALATED" ? (
+                <div className="flex h-full min-h-[120px] flex-col justify-between rounded-lg bg-rose-950/20 border border-rose-500/30 p-3">
+                  <div className="space-y-1.5">
+                    <div className="flex items-center gap-1.5 font-semibold text-rose-400 text-xs">
+                      <AlertTriangle className="h-4 w-4 text-rose-400 shrink-0" />
+                      <span>{locale === "vi" ? "Task đang bị chặn (Blocked)" : "Task is currently Blocked"}</span>
+                      <span className="ml-auto font-mono text-[10px] bg-rose-500/20 text-rose-300 px-1.5 py-0.5 rounded border border-rose-500/30">
+                        {task.riskLevel || "R1"}
+                      </span>
+                    </div>
+                    <div className="rounded bg-black/50 p-2 font-mono text-[11px] text-rose-200 border border-rose-500/20 leading-relaxed whitespace-pre-wrap max-h-28 overflow-y-auto">
+                      <div className="text-[10px] font-sans font-semibold text-rose-300 mb-0.5 flex items-center gap-1">
+                        <ShieldAlert className="h-3 w-3" />
+                        {locale === "vi" ? "Nguyên nhân chi tiết:" : "Detailed Reason:"}
+                      </div>
+                      {task.result || (locale === "vi" ? "Agent cần thêm thông tin hoặc chưa thể hoàn thành yêu cầu (Xem Audit Log)." : "Agent needs more info or could not complete request.")}
+                    </div>
+                  </div>
+                  <div className="mt-2 pt-2 border-t border-rose-500/20 flex items-center justify-between gap-2">
+                    <p className="text-[10px] text-zinc-400 italic">
+                      {locale === "vi" ? "Khắc phục nguyên nhân và bấm Requeue bên dưới." : "Resolve the issue and click Requeue below."}
+                    </p>
+                    <button
+                      type="button"
+                      onClick={() => setIsEditModalOpen(true)}
+                      className="inline-flex items-center gap-1 rounded bg-zinc-800 border border-zinc-700 px-2 py-0.5 text-xs text-zinc-300 hover:bg-zinc-700 hover:text-white transition-colors cursor-pointer"
+                    >
+                      <Edit3 className="h-3 w-3" />
+                      <span>{t.taskDetail.composeOutput}</span>
+                    </button>
+                  </div>
                 </div>
               ) : task.status === "RUNNING" ? (
                 <div className="flex h-full min-h-[120px] flex-col items-center justify-center text-center text-accent">
@@ -928,6 +1097,58 @@ function TaskDetailModal({
           onTaskUpdated();
         }}
       />
+
+      {/* Confirmation Dialog: Move Task to Trash */}
+      {showTrashConfirm && (
+        <div
+          className="fixed inset-0 z-60 flex items-center justify-center bg-black/80 p-4 backdrop-blur-sm"
+          onClick={() => setShowTrashConfirm(false)}
+        >
+          <div
+            className="w-full max-w-md rounded-2xl border border-rose-500/30 bg-panel p-6 shadow-2xl space-y-4"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center gap-3 text-rose-400">
+              <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-rose-500/10 border border-rose-500/20">
+                <Trash2 className="h-5 w-5" />
+              </div>
+              <div>
+                <h3 className="text-base font-semibold text-zinc-100">{t.taskDetail.trashConfirmTitle}</h3>
+                <p className="text-xs text-zinc-400">
+                  {locale === "vi" ? "Tự động xóa vĩnh viễn sau 30 ngày" : "Auto deleted after 30 days"}
+                </p>
+              </div>
+            </div>
+
+            <p className="text-sm text-zinc-300">{t.taskDetail.trashConfirmDesc}</p>
+
+            {trashError && (
+              <p className="text-xs text-rose-400 bg-rose-500/10 border border-rose-500/20 rounded-lg p-2">
+                {trashError}
+              </p>
+            )}
+
+            <div className="flex items-center justify-end gap-2 pt-2">
+              <button
+                type="button"
+                onClick={() => setShowTrashConfirm(false)}
+                className="rounded-xl border border-border px-4 py-2 text-xs font-medium text-zinc-300 hover:bg-white/5 transition-colors cursor-pointer"
+              >
+                {t.common.cancel || "Hủy"}
+              </button>
+              <button
+                type="button"
+                onClick={handleMoveToTrash}
+                disabled={isMovingToTrash}
+                className="inline-flex items-center gap-1.5 rounded-xl bg-rose-600 hover:bg-rose-500 px-4 py-2 text-xs font-medium text-white shadow-sm transition-colors cursor-pointer disabled:opacity-50"
+              >
+                {isMovingToTrash ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Trash2 className="h-3.5 w-3.5" />}
+                <span>{t.taskDetail.moveToTrash}</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -1008,6 +1229,24 @@ export function TaskKanban({ refreshSignal, onChanged }: TaskKanbanProps) {
   const [selectedStatus, setSelectedStatus] = useState<string>("all");
   const [selectedTimeRange, setSelectedTimeRange] = useState<"all" | "today" | "24h" | "7d" | "30d">("all");
 
+  // Trash Bin state
+  const [isTrashModalOpen, setIsTrashModalOpen] = useState(false);
+  const [trashCount, setTrashCount] = useState(0);
+
+  // Move all tasks to Trash confirmation state
+  const [showMoveAllTrashConfirm, setShowMoveAllTrashConfirm] = useState(false);
+  const [isMovingAllToTrash, setIsMovingAllToTrash] = useState(false);
+  const [moveAllTrashError, setMoveAllTrashError] = useState("");
+
+  const updateTrashCount = useCallback(async () => {
+    try {
+      const res = await fetchTrashCount();
+      setTrashCount(res?.count ?? 0);
+    } catch {
+      // ignore
+    }
+  }, []);
+
   const load = useCallback(async () => {
     setError("");
     try {
@@ -1024,18 +1263,43 @@ export function TaskKanban({ refreshSignal, onChanged }: TaskKanbanProps) {
 
   const handleUpdated = useCallback(() => {
     load();
+    void updateTrashCount();
     onChanged?.();
-  }, [load, onChanged]);
+  }, [load, updateTrashCount, onChanged]);
+
+  const handleMoveAllToTrash = async () => {
+    setIsMovingAllToTrash(true);
+    setMoveAllTrashError("");
+    try {
+      await moveAllTasksToTrash();
+      setShowMoveAllTrashConfirm(false);
+      handleUpdated();
+    } catch (err) {
+      setMoveAllTrashError(
+        err instanceof Error
+          ? err.message
+          : locale === "vi"
+          ? "Chuyển tất cả tác vụ vào thùng rác thất bại"
+          : "Failed to move all tasks to trash"
+      );
+    } finally {
+      setIsMovingAllToTrash(false);
+    }
+  };
 
   // Initial load
   useEffect(() => {
     load();
-  }, [load]);
+    void updateTrashCount();
+  }, [load, updateTrashCount]);
 
   // Re-fetch whenever parent signals a WS event
   useEffect(() => {
-    if (refreshSignal !== undefined) load();
-  }, [refreshSignal, load]);
+    if (refreshSignal !== undefined) {
+      load();
+      void updateTrashCount();
+    }
+  }, [refreshSignal, load, updateTrashCount]);
 
   // Extract unique agents from tasks list
   const uniqueAgents = useMemo(() => {
@@ -1214,46 +1478,93 @@ export function TaskKanban({ refreshSignal, onChanged }: TaskKanbanProps) {
     return map;
   }, [filteredRootTasks]);
 
+  const renderHeader = (showAction: boolean = true) => (
+    <div className="mb-3 flex items-center justify-between">
+      <div className="flex items-center">
+        <h2 className="text-sm font-medium text-zinc-400">{t.kanban.title}</h2>
+        {showAction && (
+          <button
+            type="button"
+            disabled={tasks.length === 0}
+            onClick={() => {
+              setMoveAllTrashError("");
+              setShowMoveAllTrashConfirm(true);
+            }}
+            style={{ marginLeft: "2rem" }}
+            className="inline-flex items-center gap-1.5 rounded-xl border border-rose-500/30 bg-rose-500/10 hover:border-rose-500/60 hover:bg-rose-500/20 px-3 py-1.5 text-xs font-medium text-rose-300 transition-all cursor-pointer shadow-sm disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-rose-500/10"
+            title={t.taskDetail.moveAllTrashTooltip || "Chuyển toàn bộ tác vụ vào thùng rác"}
+          >
+            <Trash2 className="h-3.5 w-3.5 text-rose-400" />
+            <span>{t.taskDetail.moveAllToTrashBtn || "Move to trash"}</span>
+          </button>
+        )}
+      </div>
+      <span className="text-xs text-zinc-600">{t.cockpit.websocketLive}</span>
+    </div>
+  );
+
   if (loading) {
     return (
-      <div className="flex items-center gap-2 py-8 text-sm text-zinc-500">
-        <Loader2 className="h-4 w-4 animate-spin text-accent" />
-        {t.common.loading}
-      </div>
+      <>
+        {renderHeader(false)}
+        <div className="flex items-center gap-2 py-8 text-sm text-zinc-500">
+          <Loader2 className="h-4 w-4 animate-spin text-accent" />
+          {t.common.loading}
+        </div>
+      </>
     );
   }
 
   if (error) {
+    const isNetworkError = error === "Failed to fetch" || error.toLowerCase().includes("fetch") || error.includes("NetworkError");
     return (
-      <div className="flex items-center justify-between rounded-lg border border-danger/30 bg-danger/10 px-4 py-3 text-sm text-danger">
-        <span>{error}</span>
-        <button type="button" onClick={load} className="ml-3 shrink-0 hover:opacity-80 cursor-pointer">
-          <RefreshCw className="h-4 w-4" />
-        </button>
-      </div>
+      <>
+        {renderHeader(false)}
+        <div className="flex items-center justify-between rounded-xl border border-rose-500/30 bg-rose-500/10 px-4 py-3 text-xs text-rose-300 shadow-sm">
+          <div className="flex items-center gap-2.5 min-w-0">
+            <AlertTriangle className="h-4 w-4 text-rose-400 shrink-0" />
+            <span className="truncate">
+              {isNetworkError
+                ? (locale === "vi" ? "Đang chờ kết nối Backend Core Engine (http://localhost:8000)..." : "Waiting for Core Engine API connection...")
+                : error}
+            </span>
+          </div>
+          <button
+            type="button"
+            onClick={load}
+            className="ml-3 inline-flex items-center gap-1.5 rounded-lg bg-rose-500/20 hover:bg-rose-500/30 border border-rose-500/40 px-3 py-1.5 text-xs text-rose-200 transition-all cursor-pointer shrink-0 font-medium"
+          >
+            <RefreshCw className="h-3.5 w-3.5" />
+            <span>{locale === "vi" ? "Thử lại" : "Retry"}</span>
+          </button>
+        </div>
+      </>
     );
   }
 
   if (tasks.length === 0) {
     return (
-      <div className="rounded-xl border border-dashed border-border bg-panel/40 p-8 text-center text-sm text-zinc-500">
-        <p className="font-medium text-zinc-300">{t.kanban.emptyBoard.title}</p>
-        <p className="mt-1 text-xs text-zinc-500">
-          {locale === "vi" ? (
-            <>
-              Nhấn <kbd className="rounded bg-white/10 px-1.5 py-0.5">⌘K</kbd> và gõ{" "}
-              <code className="rounded bg-white/10 px-1.5 py-0.5 font-mono text-accent">/goal</code> hoặc{" "}
-              <code className="rounded bg-white/10 px-1.5 py-0.5 font-mono text-accent">/do</code> để bắt đầu.
-            </>
-          ) : (
-            <>
-              Press <kbd className="rounded bg-white/10 px-1.5 py-0.5">⌘K</kbd> and type{" "}
-              <code className="rounded bg-white/10 px-1.5 py-0.5 font-mono text-accent">/goal</code> or{" "}
-              <code className="rounded bg-white/10 px-1.5 py-0.5 font-mono text-accent">/do</code> to get started.
-            </>
-          )}
-        </p>
-      </div>
+      <>
+        {renderHeader(true)}
+        <div className="rounded-xl border border-dashed border-border bg-panel/40 p-8 text-center text-sm text-zinc-500">
+          <p className="font-medium text-zinc-300">{t.kanban.emptyBoard.title}</p>
+          <p className="mt-1 text-xs text-zinc-500">
+            {locale === "vi" ? (
+              <>
+                Nhấn <kbd className="rounded bg-white/10 px-1.5 py-0.5">⌘K</kbd> và gõ{" "}
+                <code className="rounded bg-white/10 px-1.5 py-0.5 font-mono text-accent">/goal</code> hoặc{" "}
+                <code className="rounded bg-white/10 px-1.5 py-0.5 font-mono text-accent">/do</code> để bắt đầu.
+              </>
+            ) : (
+              <>
+                Press <kbd className="rounded bg-white/10 px-1.5 py-0.5">⌘K</kbd> and type{" "}
+                <code className="rounded bg-white/10 px-1.5 py-0.5 font-mono text-accent">/goal</code> or{" "}
+                <code className="rounded bg-white/10 px-1.5 py-0.5 font-mono text-accent">/do</code> to get started.
+              </>
+            )}
+          </p>
+        </div>
+      </>
     );
   }
 
@@ -1261,6 +1572,8 @@ export function TaskKanban({ refreshSignal, onChanged }: TaskKanbanProps) {
 
   return (
     <>
+      {renderHeader(true)}
+
       {/* Search & Filter Toolbar */}
       <div className="mb-4 space-y-3 rounded-2xl border border-border/80 bg-canvas/70 p-3.5 backdrop-blur-md shadow-sm">
         {/* Top Row: Search input + Counter badge + Reset */}
@@ -1292,6 +1605,21 @@ export function TaskKanban({ refreshSignal, onChanged }: TaskKanbanProps) {
               <strong className="text-accent">{totalDisplayedCount}</strong>
               <span className="text-zinc-500">/ {tasks.length}</span>
             </span>
+
+            <button
+              type="button"
+              onClick={() => setIsTrashModalOpen(true)}
+              className="inline-flex items-center gap-1.5 rounded-xl border border-border/80 bg-panel/70 hover:border-rose-500/40 hover:bg-rose-500/10 hover:text-rose-300 px-3 py-1.5 text-xs font-medium text-zinc-300 transition-all cursor-pointer shadow-sm"
+              title={locale === "vi" ? "Thùng rác tác vụ (Tự động xóa sau 30 ngày)" : "Task Trash Bin (Auto clean after 30 days)"}
+            >
+              <Trash2 className="h-3.5 w-3.5 text-rose-400" />
+              <span>{t.kanban.trashBtn || "Thùng rác"}</span>
+              {trashCount > 0 && (
+                <span className="rounded-full bg-rose-500/20 text-rose-300 border border-rose-500/30 px-1.5 py-0.2 text-[10px] font-mono font-semibold">
+                  {trashCount}
+                </span>
+              )}
+            </button>
 
             {isFilterActive && (
               <button
@@ -1537,6 +1865,87 @@ export function TaskKanban({ refreshSignal, onChanged }: TaskKanbanProps) {
           onSelectTask={(t) => setSelectedTask(t)}
           onTaskUpdated={handleUpdated}
         />
+      )}
+
+      <TaskTrashModal
+        isOpen={isTrashModalOpen}
+        onClose={() => {
+          setIsTrashModalOpen(false);
+          void updateTrashCount();
+        }}
+        onTasksChanged={() => {
+          load();
+          void updateTrashCount();
+        }}
+      />
+
+      {/* Confirmation Dialog: Move All Tasks to Trash */}
+      {showMoveAllTrashConfirm && (
+        <div
+          className="fixed inset-0 z-60 flex items-center justify-center bg-black/80 p-4 backdrop-blur-sm"
+          onClick={() => {
+            if (!isMovingAllToTrash) setShowMoveAllTrashConfirm(false);
+          }}
+        >
+          <div
+            className="w-full max-w-md rounded-2xl border border-rose-500/30 bg-panel p-6 shadow-2xl space-y-4 text-left cursor-default animate-in fade-in zoom-in-95 duration-150"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center gap-3 text-rose-400">
+              <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-rose-500/10 border border-rose-500/20">
+                <Trash2 className="h-5 w-5" />
+              </div>
+              <div>
+                <h3 className="text-base font-semibold text-zinc-100">
+                  {t.taskDetail.moveAllTrashConfirmTitle || "Move all tasks to Trash?"}
+                </h3>
+                <p className="text-xs text-zinc-400">
+                  {locale === "vi" ? "Tự động xóa vĩnh viễn sau 30 ngày" : "Auto deleted after 30 days"}
+                </p>
+              </div>
+            </div>
+
+            <p className="text-sm text-zinc-300 leading-relaxed">
+              {(t.taskDetail.moveAllTrashConfirmDesc || "Toàn bộ {count} tác vụ hiện có trên bảng Kanban sẽ được chuyển vào Thùng rác.")
+                .replace("{count}", String(tasks.length))}
+            </p>
+
+            {moveAllTrashError && (
+              <p className="text-xs text-rose-400 bg-rose-500/10 border border-rose-500/20 rounded-lg p-2.5">
+                {moveAllTrashError}
+              </p>
+            )}
+
+            <div className="flex items-center justify-end gap-2 pt-2">
+              <button
+                type="button"
+                disabled={isMovingAllToTrash}
+                onClick={() => setShowMoveAllTrashConfirm(false)}
+                className="rounded-xl border border-border px-4 py-2 text-xs font-medium text-zinc-300 hover:bg-white/5 transition-colors cursor-pointer disabled:opacity-50"
+              >
+                {t.common.cancel || "Hủy"}
+              </button>
+              <button
+                type="button"
+                onClick={handleMoveAllToTrash}
+                disabled={isMovingAllToTrash}
+                className="inline-flex items-center gap-1.5 rounded-xl bg-rose-600 hover:bg-rose-500 px-4 py-2 text-xs font-medium text-white shadow-sm transition-colors cursor-pointer disabled:opacity-50"
+              >
+                {isMovingAllToTrash ? (
+                  <>
+                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                    <span>{t.taskDetail.movingAllToTrash || "Đang chuyển..."}</span>
+                  </>
+                ) : (
+                  <>
+                    <Trash2 className="h-3.5 w-3.5" />
+                    <span>{t.taskDetail.moveAllToTrashBtn || "Chuyển tất cả vào Thùng rác"}</span>
+                  </>
+                )}
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </>
   );

@@ -1,0 +1,28 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Capability for the main AI-OPC desktop window",
+  "windows": ["*"],
+  "permissions": [
+    "core:default",
+    "shell:default",
+    {
+      "identifier": "shell:allow-execute",
+      "allow": [
+        {
+          "name": "binaries/api-server",
+          "sidecar": true
+        }
+      ]
+    },
+    {
+      "identifier": "shell:allow-spawn",
+      "allow": [
+        {
+          "name": "binaries/api-server",
+          "sidecar": true
+        }
+      ]
+    }
+  ]
+}

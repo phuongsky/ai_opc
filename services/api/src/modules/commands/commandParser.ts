@@ -14,6 +14,7 @@ import { notifyFounder } from "../notifications/notifier";
 import type { FounderCommandType } from "@ai-opc/shared";
 
 const COMMAND_PREFIXES: FounderCommandType[] = [
+  "/hire",
   "/goal",
   "/plan",
   "/analyze",
@@ -37,11 +38,21 @@ export function parseFounderCommand(raw: string): ParsedCommand {
   const trimmed = raw.trim();
   const prefix = COMMAND_PREFIXES.find((p) => trimmed.startsWith(p));
   if (!prefix) {
-    throw new Error(
-      `Không nhận diện được lệnh. Các lệnh hợp lệ: ${COMMAND_PREFIXES.join(", ")}`
-    );
+    // Nếu bắt đầu bằng '/' nhưng không thuộc danh sách lệnh chuẩn -> báo lỗi cú pháp
+    if (trimmed.startsWith("/")) {
+      throw new Error(
+        `Không nhận diện được lệnh. Các lệnh hợp lệ: ${COMMAND_PREFIXES.join(", ")}`
+      );
+    }
+    // Nếu là câu lệnh tự nhiên (không có prefix '/') -> Tự động chuyển thành /do để Agent xử lý
+    return { type: "/do", argument: trimmed, raw: trimmed };
   }
   return { type: prefix, argument: trimmed.slice(prefix.length).trim(), raw: trimmed };
+}
+
+export interface CommandDispatchContext {
+  origin?: "TELEGRAM" | "ZALO" | "ZALOBOT" | "WEB";
+  originId?: string | number;
 }
 
 /**
@@ -53,7 +64,11 @@ export function parseFounderCommand(raw: string): ParsedCommand {
  * - /stop: Emergency Panic (Rule 12) tạm dừng toàn bộ agent
  * - /settings, /knowledge, /audit, /security: Điều hướng nhanh tới các trang quản trị
  */
-export async function dispatchFounderCommand(cmd: ParsedCommand) {
+export async function dispatchFounderCommand(cmd: ParsedCommand, context?: CommandDispatchContext) {
+  const createdByTag = context?.origin && context.originId
+    ? `${context.origin}:${context.originId}`
+    : "FOUNDER";
+
   switch (cmd.type) {
     case "/goal": {
       const taskId = `task_${randomUUID()}`;
@@ -64,7 +79,7 @@ export async function dispatchFounderCommand(cmd: ParsedCommand) {
           objective: cmd.argument,
           status: "NEW",
           riskLevel: "R1",
-          createdBy: "FOUNDER",
+          createdBy: createdByTag,
         },
       });
       broadcastCompanyEvent({ type: "TASK_UPDATED", payload: task });
@@ -78,7 +93,7 @@ export async function dispatchFounderCommand(cmd: ParsedCommand) {
     }
 
     case "/do": {
-      const assigned = await handleDirectDoCommand(cmd.argument);
+      const assigned = await handleDirectDoCommand(cmd.argument, context);
       return {
         status: "ASSIGNED",
         type: "/do",
@@ -143,6 +158,15 @@ export async function dispatchFounderCommand(cmd: ParsedCommand) {
         completedTasks,
         totalCostUsd: totalCost,
         message: `Hệ thống có ${agents.length} Agent, ${runningTasks} task đang chạy, ${completedTasks} task hoàn tất, tổng chi phí $${totalCost.toFixed(4)}.`,
+      };
+    }
+
+    case "/hire": {
+      return {
+        status: "NAVIGATE",
+        type: "/hire",
+        path: "/agents/new",
+        message: "Điều hướng tới Tuyển dụng AI Agent mới (/agents/new)",
       };
     }
 

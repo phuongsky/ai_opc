@@ -154,8 +154,9 @@ async function checkStuckDecisions(): Promise<void> {
     await notifyFounder({
       category: "DECISION",
       title: `⏰ Decision chờ duyệt quá ${ageMinutes} phút`,
-      message: `"${decision.decisionTitle}"\nRisk: ${decision.riskLevel}\n\n${decision.reason}\n\nVào Web app (cột "Chờ phê duyệt") để xử lý.`,
+      message: `"${decision.decisionTitle}"\nRisk: ${decision.riskLevel}\n\n${decision.reason}\n\nBấm nút bên dưới hoặc vào Web app để xử lý.`,
       severity: "critical",
+      decisionId: decision.id,
     });
 
     await logAudit({
@@ -179,6 +180,33 @@ async function checkStuckDecisions(): Promise<void> {
   }
 }
 
+// ---- 5. Tự động dọn dẹp task trong thùng rác sau 30 ngày ---------------------
+
+export async function cleanupExpiredTrashTasks(): Promise<number> {
+  const THIRTY_DAYS_MS = 30 * 24 * 60 * 60 * 1000;
+  const cutoff = new Date(Date.now() - THIRTY_DAYS_MS);
+
+  const expiredTasks = await db.task.findMany({
+    where: {
+      status: "TRASH",
+      updatedAt: { lte: cutoff },
+    },
+    select: { id: true },
+  });
+
+  if (expiredTasks.length === 0) return 0;
+
+  const taskIds = expiredTasks.map((t: any) => t.id);
+
+  await db.decisionPackage.deleteMany({ where: { taskId: { in: taskIds } } });
+  await db.auditLog.deleteMany({ where: { taskId: { in: taskIds } } });
+  const result = await db.task.deleteMany({ where: { id: { in: taskIds } } });
+
+  // eslint-disable-next-line no-console
+  console.log(`[TrashCleaner] Đã tự động dọn dẹp vĩnh viễn ${result.count} task quá hạn 30 ngày trong thùng rác.`);
+  return result.count;
+}
+
 // ---- Orchestrate toàn bộ job ------------------------------------------------
 
 export async function runPeriodicJobs(): Promise<void> {
@@ -187,6 +215,7 @@ export async function runPeriodicJobs(): Promise<void> {
     await checkWeeklyReportDue();
     await checkStuckRunningTasks();
     await checkStuckDecisions();
+    await cleanupExpiredTrashTasks();
   } catch (err) {
     // eslint-disable-next-line no-console
     console.error("[periodicJobs] Lỗi:", err);
@@ -195,7 +224,7 @@ export async function runPeriodicJobs(): Promise<void> {
 
 export function startPeriodicJobs(intervalMs: number): NodeJS.Timeout {
   // eslint-disable-next-line no-console
-  console.log(`[periodicJobs] Bắt đầu kiểm tra Blocked/Stuck/Report mỗi ${intervalMs}ms`);
+  console.log(`[periodicJobs] Bắt đầu kiểm tra Blocked/Stuck/Report/Trash mỗi ${intervalMs}ms`);
   return setInterval(() => {
     void runPeriodicJobs();
   }, intervalMs);

@@ -19,9 +19,11 @@ const HIGH_RISK = new Set(["R3", "R4"]);
 export function DecisionCard({
   decision,
   onDone,
+  canApprove = true,
 }: {
   decision: DecisionPackage;
   onDone?: () => void;
+  canApprove?: boolean;
 }) {
   const { t } = useI18n();
   const [totpPrompt, setTotpPrompt] = useState(false);
@@ -138,22 +140,28 @@ export function DecisionCard({
 
       {/* Actions */}
       {!totpPrompt && (
-        <div className="flex gap-3 pt-1">
-          <button
-            onClick={handleApprove}
-            disabled={busy}
-            className="flex flex-1 items-center justify-center gap-1.5 rounded-lg bg-accent/90 py-2 text-sm font-medium text-black hover:bg-accent disabled:opacity-50 cursor-pointer"
-          >
-            <Check className="h-4 w-4" /> {t.decisions.approve}
-          </button>
-          <button
-            onClick={() => act("reject")}
-            disabled={busy}
-            className="flex flex-1 items-center justify-center gap-1.5 rounded-lg border border-border py-2 text-sm font-medium text-zinc-300 hover:bg-white/5 disabled:opacity-50 cursor-pointer"
-          >
-            <X className="h-4 w-4" /> {t.decisions.reject}
-          </button>
-        </div>
+        canApprove ? (
+          <div className="flex gap-3 pt-1">
+            <button
+              onClick={handleApprove}
+              disabled={busy}
+              className="flex flex-1 items-center justify-center gap-1.5 rounded-lg bg-accent/90 py-2 text-sm font-medium text-black hover:bg-accent disabled:opacity-50 cursor-pointer"
+            >
+              <Check className="h-4 w-4" /> {t.decisions.approve}
+            </button>
+            <button
+              onClick={() => act("reject")}
+              disabled={busy}
+              className="flex flex-1 items-center justify-center gap-1.5 rounded-lg border border-border py-2 text-sm font-medium text-zinc-300 hover:bg-white/5 disabled:opacity-50 cursor-pointer"
+            >
+              <X className="h-4 w-4" /> {t.decisions.reject}
+            </button>
+          </div>
+        ) : (
+          <div className="rounded-lg border border-border/60 bg-white/5 py-2 px-3 text-center text-xs text-zinc-500">
+            Chỉ Founder / Manager mới có quyền phê duyệt quyết định
+          </div>
+        )
       )}
     </div>
   );

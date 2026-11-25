@@ -16,13 +16,23 @@ function loadPrismaClient() {
       return new PrismaClient({ datasourceUrl: env.databaseUrl });
     }
     case "sqlserver": {
-      const { PrismaClient } = require("../../node_modules/.prisma/client-mssql");
-      return new PrismaClient({ datasourceUrl: env.databaseUrl });
+      try {
+        const { PrismaClient } = require("../../node_modules/.prisma/client-mssql");
+        return new PrismaClient({ datasourceUrl: env.databaseUrl });
+      } catch {
+        const { PrismaClient } = require("../../node_modules/.prisma/client-sqlite");
+        return new PrismaClient({ datasourceUrl: env.databaseUrl });
+      }
     }
     case "postgresql":
     default: {
-      const { PrismaClient } = require("@prisma/client");
-      return new PrismaClient({ datasourceUrl: env.databaseUrl });
+      try {
+        const { PrismaClient } = require("@prisma/client");
+        return new PrismaClient({ datasourceUrl: env.databaseUrl });
+      } catch {
+        const { PrismaClient } = require("../../node_modules/.prisma/client-sqlite");
+        return new PrismaClient({ datasourceUrl: env.databaseUrl });
+      }
     }
   }
 }

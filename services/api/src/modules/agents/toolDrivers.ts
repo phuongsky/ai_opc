@@ -10,6 +10,8 @@
 import nodemailer from "nodemailer";
 import { db } from "../../db/client";
 import { registerToolDriver } from "../governance/toolGateway";
+import { executeHotelSunrightCrud } from "../datasources/hotelSunrightCrud";
+import { describeHotelSunrightSchema } from "../datasources/schemaIntrospection";
 
 // ---- Search Engine Implementation ------------------------------------------
 
@@ -278,5 +280,59 @@ export function registerAllToolDrivers(): void {
       message: `Đã đồng bộ thông tin khách hàng "${customerId}" vào hệ thống CRM.`,
     };
   });
+
+  // 8. Tool Hotel Sunright / DBS — Đọc dữ liệu (R1)
+  const hotelReadDriver = async (params: Record<string, unknown>) => {
+    const p = (params ?? {}) as {
+      table?: string;
+      query?: string;
+      where?: Record<string, unknown>;
+      limit?: number;
+      operation?: "select" | "count" | "aggregate";
+    };
+    let table = p.table;
+    if (!table && p.query) {
+      // Tự động trích xuất tên bảng nếu model truyền nhầm dạng SQL query
+      const match = /FROM\s+([a-zA-Z0-9_]+)/i.exec(p.query);
+      if (match && match[1]) {
+        table = match[1];
+      }
+    }
+    if (!table) {
+      throw new Error("Tham số 'table' là bắt buộc (ví dụ: 'tbl_Reservations', 'tbl_Rooms', 'tbl_Guests').");
+    }
+    const operation = p.operation === "count" || p.operation === "aggregate" ? p.operation : "select";
+    return executeHotelSunrightCrud({ table, operation, where: p.where, limit: p.limit });
+  };
+  registerToolDriver("tool_hotel_dbs_read", hotelReadDriver);
+  registerToolDriver("tool_hotel_dbs_read", hotelReadDriver);
+
+  // 9. Tool Hotel Sunright / DBS — Tạo/sửa booking (R3 - Yêu cầu Founder duyệt)
+  const hotelWriteDriver = async (params: Record<string, unknown>) => {
+    const p = (params ?? {}) as {
+      table: string;
+      operation: "insert" | "update";
+      data?: Record<string, unknown>;
+      where?: Record<string, unknown>;
+    };
+    if (!p.table) {
+      throw new Error("Tham số 'table' là bắt buộc (ví dụ: 'tbl_Reservations', 'tbl_Guests').");
+    }
+    const operation = p.operation || (p.data && !p.where ? "insert" : "update");
+    if (!["insert", "update"].includes(operation)) {
+      throw new Error(`Tool write chỉ nhận operation insert/update, nhận được: ${operation}`);
+    }
+    return executeHotelSunrightCrud({ table: p.table, operation, data: p.data, where: p.where });
+  };
+  registerToolDriver("tool_hotel_dbs_write", hotelWriteDriver);
+  registerToolDriver("tool_hotel_dbs_write", hotelWriteDriver);
+
+  // 10. Tool Hotel Sunright / DBS — Xem cấu trúc DB (R0 - Read-only Metadata)
+  const hotelSchemaDriver = async () => {
+    return describeHotelSunrightSchema();
+  };
+  registerToolDriver("tool_hotel_dbs_describe_schema", hotelSchemaDriver);
+  registerToolDriver("tool_hotel_dbs_describe_schema", hotelSchemaDriver);
 }
+
 

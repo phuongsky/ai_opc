@@ -18,6 +18,7 @@
 import { env } from "../../config/env";
 import { postJsonWithRetry } from "./retry";
 import { generateLocalEmbedding } from "./localVectorizer";
+import { getCachedDynamicLlmConfig } from "./resolveProvider";
 
 export type EmbeddingProvider = "openai" | "gemini" | "custom" | "builtin";
 
@@ -30,7 +31,7 @@ export interface EmbeddingResult {
 
 const DEFAULT_EMBEDDING_MODEL: Record<EmbeddingProvider, string> = {
   openai: "text-embedding-3-small",
-  gemini: "text-embedding-004",
+  gemini: "gemini-embedding-001",
   custom: "auto",
   builtin: "local-tfidf-384",
 };
@@ -43,61 +44,79 @@ interface ResolvedEmbeddingProvider {
 }
 
 function resolveEmbeddingProvider(): ResolvedEmbeddingProvider {
+  const dynamic = getCachedDynamicLlmConfig();
   const explicit = env.embeddingProvider;
+
+  const geminiKey =
+    dynamic.embeddingApiKey ||
+    dynamic.geminiApiKey ||
+    process.env.EMBEDDING_API_KEY ||
+    env.geminiApiKey ||
+    process.env.GEMINI_API_KEY;
+  const openaiKey =
+    dynamic.embeddingApiKey ||
+    dynamic.openaiApiKey ||
+    process.env.EMBEDDING_API_KEY ||
+    env.openaiApiKey ||
+    process.env.OPENAI_API_KEY;
+  const customKey =
+    dynamic.embeddingApiKey ||
+    dynamic.customLlmApiKey ||
+    process.env.EMBEDDING_API_KEY ||
+    env.customLlmApiKey ||
+    process.env.CUSTOM_LLM_API_KEY;
+  const customUrl = dynamic.customLlmUrl || env.embeddingBaseUrl || env.customLlmUrl;
 
   if (explicit === "builtin") {
     return { provider: "builtin", model: DEFAULT_EMBEDDING_MODEL.builtin, apiKey: "" };
   }
   if (explicit === "openai") {
-    const key = env.embeddingApiKey || env.openaiApiKey;
-    if (!key) throw new Error("EMBEDDING_PROVIDER=openai nhưng thiếu OPENAI_API_KEY hoặc EMBEDDING_API_KEY trong .env");
-    return { provider: "openai", model: env.embeddingModel || DEFAULT_EMBEDDING_MODEL.openai, apiKey: key };
+    if (!openaiKey) {
+      console.warn("[KnowledgeBase] EMBEDDING_PROVIDER=openai nhưng thiếu OPENAI_API_KEY hoặc EMBEDDING_API_KEY trong Cài đặt hoặc .env — Tự động fallback sang builtin TF-IDF vectorizer.");
+      return { provider: "builtin", model: DEFAULT_EMBEDDING_MODEL.builtin, apiKey: "" };
+    }
+    return { provider: "openai", model: env.embeddingModel || DEFAULT_EMBEDDING_MODEL.openai, apiKey: openaiKey };
   }
   if (explicit === "gemini") {
-    const key = env.embeddingApiKey || env.geminiApiKey;
-    if (!key) throw new Error("EMBEDDING_PROVIDER=gemini nhưng thiếu GEMINI_API_KEY hoặc EMBEDDING_API_KEY trong .env");
-    return { provider: "gemini", model: env.embeddingModel || DEFAULT_EMBEDDING_MODEL.gemini, apiKey: key };
+    if (!geminiKey) {
+      console.warn("[KnowledgeBase] EMBEDDING_PROVIDER=gemini nhưng thiếu GEMINI_API_KEY hoặc EMBEDDING_API_KEY trong Cài đặt hoặc .env — Tự động fallback sang builtin TF-IDF vectorizer.");
+      return { provider: "builtin", model: DEFAULT_EMBEDDING_MODEL.builtin, apiKey: "" };
+    }
+    return { provider: "gemini", model: env.embeddingModel || DEFAULT_EMBEDDING_MODEL.gemini, apiKey: geminiKey };
   }
   if (explicit === "custom") {
-    const url = env.embeddingBaseUrl || env.customLlmUrl;
-    if (!url) throw new Error("EMBEDDING_PROVIDER=custom nhưng thiếu CUSTOM_LLM_URL hoặc EMBEDDING_BASE_URL trong .env");
+    if (!customUrl) {
+      console.warn("[KnowledgeBase] EMBEDDING_PROVIDER=custom nhưng thiếu CUSTOM_LLM_URL — Tự động fallback sang builtin TF-IDF vectorizer.");
+      return { provider: "builtin", model: DEFAULT_EMBEDDING_MODEL.builtin, apiKey: "" };
+    }
     return {
       provider: "custom",
       model: env.embeddingModel || DEFAULT_EMBEDDING_MODEL.custom,
-      apiKey: env.embeddingApiKey || env.customLlmApiKey,
-      baseUrl: url,
+      apiKey: customKey || "",
+      baseUrl: customUrl,
     };
   }
 
-  // Auto-detect — ưu tiên theo LLM_PROVIDER đang dùng
-  if (env.llmProvider === "openai" && env.openaiApiKey) {
-    return { provider: "openai", model: env.embeddingModel || DEFAULT_EMBEDDING_MODEL.openai, apiKey: env.openaiApiKey };
+  // Auto-detect — ưu tiên provider chuẩn có sẵn API key
+  const activeLlmProvider = dynamic.llmProvider || env.llmProvider;
+  if (activeLlmProvider === "openai" && openaiKey) {
+    return { provider: "openai", model: env.embeddingModel || DEFAULT_EMBEDDING_MODEL.openai, apiKey: openaiKey };
   }
-  if (env.llmProvider === "gemini" && env.geminiApiKey) {
-    return { provider: "gemini", model: env.embeddingModel || DEFAULT_EMBEDDING_MODEL.gemini, apiKey: env.geminiApiKey };
+  if (activeLlmProvider === "gemini" && geminiKey) {
+    return { provider: "gemini", model: env.embeddingModel || DEFAULT_EMBEDDING_MODEL.gemini, apiKey: geminiKey };
   }
-  if (env.llmProvider === "custom" && env.customLlmUrl) {
+  if (geminiKey) {
+    return { provider: "gemini", model: env.embeddingModel || DEFAULT_EMBEDDING_MODEL.gemini, apiKey: geminiKey };
+  }
+  if (openaiKey) {
+    return { provider: "openai", model: env.embeddingModel || DEFAULT_EMBEDDING_MODEL.openai, apiKey: openaiKey };
+  }
+  if (customUrl) {
     return {
       provider: "custom",
       model: env.embeddingModel || DEFAULT_EMBEDDING_MODEL.custom,
-      apiKey: env.customLlmApiKey,
-      baseUrl: env.customLlmUrl,
-    };
-  }
-
-  // Fallback nếu có key riêng
-  if (env.openaiApiKey) {
-    return { provider: "openai", model: env.embeddingModel || DEFAULT_EMBEDDING_MODEL.openai, apiKey: env.openaiApiKey };
-  }
-  if (env.geminiApiKey) {
-    return { provider: "gemini", model: env.embeddingModel || DEFAULT_EMBEDDING_MODEL.gemini, apiKey: env.geminiApiKey };
-  }
-  if (env.customLlmUrl) {
-    return {
-      provider: "custom",
-      model: env.embeddingModel || DEFAULT_EMBEDDING_MODEL.custom,
-      apiKey: env.customLlmApiKey,
-      baseUrl: env.customLlmUrl,
+      apiKey: customKey || "",
+      baseUrl: customUrl,
     };
   }
 
@@ -105,7 +124,67 @@ function resolveEmbeddingProvider(): ResolvedEmbeddingProvider {
   return { provider: "builtin", model: DEFAULT_EMBEDDING_MODEL.builtin, apiKey: "" };
 }
 
-async function embedOpenAiCompatible(
+async function embedOpenAiCompatibleBatch(
+  url: string,
+  headers: Record<string, string>,
+  model: string,
+  texts: string[],
+  label: string
+): Promise<EmbeddingResult[]> {
+  if (texts.length === 0) return [];
+
+  // Thử gửi dạng batch mảng input trước
+  try {
+    const raw = await postJsonWithRetry(
+      url,
+      headers,
+      { model, input: texts.length === 1 ? texts[0] : texts },
+      {
+        maxRetries: Math.max(2, env.llmMaxRetries),
+        baseMs: env.llmRetryBaseMs,
+        maxMs: env.llmRetryMaxMs,
+        label,
+      }
+    );
+
+    const data = raw as {
+      data?: { index?: number; embedding?: number[] }[];
+      usage?: { prompt_tokens?: number; total_tokens?: number };
+    };
+
+    if (Array.isArray(data.data) && data.data.length > 0) {
+      // Sắp xếp theo index để đảm bảo thứ tự đúng với mảng texts ban đầu
+      const sorted = [...data.data].sort((a, b) => (a.index ?? 0) - (b.index ?? 0));
+      const totalTokens =
+        data.usage?.total_tokens ??
+        data.usage?.prompt_tokens ??
+        texts.reduce((acc, t) => acc + Math.max(1, Math.ceil(t.length / 4)), 0);
+      const tokenPerItem = Math.max(1, Math.round(totalTokens / texts.length));
+
+      return sorted.map((item) => ({
+        embedding: item.embedding ?? [],
+        tokenCount: tokenPerItem,
+        engine: "remote",
+      }));
+    }
+  } catch (err: any) {
+    // Nếu lỗi không phải 429 mà do endpoint không hỗ trợ batch mảng (ví dụ 400 Bad Request), thử gọi tuần tự có delay
+    if (texts.length > 1 && !String(err?.message || "").includes("429")) {
+      const results: EmbeddingResult[] = [];
+      for (let i = 0; i < texts.length; i++) {
+        if (i > 0) await new Promise((r) => setTimeout(r, 500));
+        const res = await embedOpenAiCompatibleSingle(url, headers, model, texts[i], label);
+        results.push(res);
+      }
+      return results;
+    }
+    throw err;
+  }
+
+  throw new Error(`${label}: Phản hồi không có dữ liệu embedding hợp lệ`);
+}
+
+async function embedOpenAiCompatibleSingle(
   url: string,
   headers: Record<string, string>,
   model: string,
@@ -117,7 +196,7 @@ async function embedOpenAiCompatible(
     headers,
     { model, input: text },
     {
-      maxRetries: env.llmMaxRetries,
+      maxRetries: Math.max(2, env.llmMaxRetries),
       baseMs: env.llmRetryBaseMs,
       maxMs: env.llmRetryMaxMs,
       label,
@@ -133,14 +212,73 @@ async function embedOpenAiCompatible(
   return { embedding, tokenCount, engine: "remote" };
 }
 
-async function embedGemini(resolved: ResolvedEmbeddingProvider, text: string): Promise<EmbeddingResult> {
+async function embedGeminiBatch(
+  resolved: ResolvedEmbeddingProvider,
+  texts: string[]
+): Promise<EmbeddingResult[]> {
+  if (texts.length === 0) return [];
+  if (texts.length === 1) {
+    const single = await embedGeminiSingle(resolved, texts[0]);
+    return [single];
+  }
+
+  // Thử dùng Gemini batchEmbedContents
+  try {
+    const modelPath = resolved.model.startsWith("models/") ? resolved.model : `models/${resolved.model}`;
+    const url = `https://generativelanguage.googleapis.com/v1beta/${modelPath}:batchEmbedContents?key=${resolved.apiKey}`;
+    const requests = texts.map((t) => ({
+      model: modelPath,
+      content: { parts: [{ text: t }] },
+    }));
+
+    const raw = await postJsonWithRetry(
+      url,
+      { "content-type": "application/json" },
+      { requests },
+      {
+        maxRetries: Math.max(2, env.llmMaxRetries),
+        baseMs: env.llmRetryBaseMs,
+        maxMs: env.llmRetryMaxMs,
+        label: `Gemini Batch Embedding (${resolved.model})`,
+      }
+    );
+
+    const data = raw as { embeddings?: { values?: number[] }[] };
+    if (Array.isArray(data.embeddings)) {
+      return data.embeddings.map((item, idx) => ({
+        embedding: item.values ?? [],
+        tokenCount: Math.max(1, Math.ceil(texts[idx].length / 4)),
+        engine: "remote",
+      }));
+    }
+  } catch (err: any) {
+    if (!String(err?.message || "").includes("429")) {
+      // Fallback gọi tuần tự
+      const results: EmbeddingResult[] = [];
+      for (let i = 0; i < texts.length; i++) {
+        if (i > 0) await new Promise((r) => setTimeout(r, 500));
+        const res = await embedGeminiSingle(resolved, texts[i]);
+        results.push(res);
+      }
+      return results;
+    }
+    throw err;
+  }
+
+  throw new Error(`Gemini: Phản hồi batch embedding không hợp lệ`);
+}
+
+async function embedGeminiSingle(
+  resolved: ResolvedEmbeddingProvider,
+  text: string
+): Promise<EmbeddingResult> {
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${resolved.model}:embedContent?key=${resolved.apiKey}`;
   const raw = await postJsonWithRetry(
     url,
     { "content-type": "application/json" },
     { content: { parts: [{ text }] } },
     {
-      maxRetries: env.llmMaxRetries,
+      maxRetries: Math.max(2, env.llmMaxRetries),
       baseMs: env.llmRetryBaseMs,
       maxMs: env.llmRetryMaxMs,
       label: `Gemini Embedding (${resolved.model})`,
@@ -159,25 +297,29 @@ function buildCustomEmbeddingUrl(baseUrl: string): string {
   return `${trimmed}/v1/embeddings`;
 }
 
-export async function generateEmbedding(text: string): Promise<EmbeddingResult> {
+/**
+ * Sinh embedding theo nhóm (Batching) cho danh sách các đoạn text.
+ * Hỗ trợ tự động fallback sang Built-in Vectorizer nếu remote endpoint gặp lỗi.
+ */
+export async function generateEmbeddings(texts: string[]): Promise<EmbeddingResult[]> {
+  if (texts.length === 0) return [];
   const resolved = resolveEmbeddingProvider();
 
   if (resolved.provider === "builtin") {
-    const local = generateLocalEmbedding(text);
-    return { ...local, engine: "builtin" };
+    return texts.map((t) => ({ ...generateLocalEmbedding(t), engine: "builtin" }));
   }
 
   try {
     if (resolved.provider === "gemini") {
-      return await embedGemini(resolved, text);
+      return await embedGeminiBatch(resolved, texts);
     }
 
     if (resolved.provider === "openai") {
-      return await embedOpenAiCompatible(
+      return await embedOpenAiCompatibleBatch(
         "https://api.openai.com/v1/embeddings",
         { "content-type": "application/json", authorization: `Bearer ${resolved.apiKey}` },
         resolved.model,
-        text,
+        texts,
         `OpenAI Embedding (${resolved.model})`
       );
     }
@@ -186,11 +328,11 @@ export async function generateEmbedding(text: string): Promise<EmbeddingResult> 
     const url = buildCustomEmbeddingUrl(resolved.baseUrl!);
     const headers: Record<string, string> = { "content-type": "application/json" };
     if (resolved.apiKey) headers["authorization"] = `Bearer ${resolved.apiKey}`;
-    return await embedOpenAiCompatible(
+    return await embedOpenAiCompatibleBatch(
       url,
       headers,
       resolved.model,
-      text,
+      texts,
       `Custom Embedding (${resolved.model} @ ${resolved.baseUrl})`
     );
   } catch (err: any) {
@@ -198,11 +340,18 @@ export async function generateEmbedding(text: string): Promise<EmbeddingResult> 
     // eslint-disable-next-line no-console
     console.warn(
       `[Embeddings] Remote endpoint ${resolved.provider} (${resolved.model}) không hỗ trợ embeddings hoặc gặp lỗi (${errMsg}). ` +
-        "Tự động chuyển sang Built-in Semantic Vectorizer để đảm bảo nạp/tìm kiếm tài liệu hoạt động 100% không bị gián đoạn."
+      "Tự động chuyển sang Built-in Semantic Vectorizer để đảm bảo nạp/tìm kiếm tài liệu hoạt động 100% không bị gián đoạn."
     );
-    const local = generateLocalEmbedding(text);
-    return { ...local, tokenCount: 0, engine: "builtin" };
+    return texts.map((t) => ({ ...generateLocalEmbedding(t), tokenCount: 0, engine: "builtin" }));
   }
+}
+
+/**
+ * Sinh embedding cho 1 đoạn text đơn lẻ (dùng cho tìm kiếm ngữ nghĩa hoặc single text).
+ */
+export async function generateEmbedding(text: string): Promise<EmbeddingResult> {
+  const results = await generateEmbeddings([text]);
+  return results[0] || { ...generateLocalEmbedding(text), engine: "builtin" };
 }
 
 export function isEmbeddingConfigured(): boolean {

@@ -3,11 +3,17 @@
 import { Suspense } from "react";
 import { useSearchParams } from "next/navigation";
 import AgentDetailClient from "@/components/AgentDetailClient";
+import AgentDirectoryClient from "@/components/AgentDirectoryClient";
 
 function AgentPageContent() {
   const searchParams = useSearchParams();
-  const agentId = searchParams.get("id") || "ai_coo";
-  return <AgentDetailClient agentId={agentId} />;
+  const agentId = searchParams.get("id");
+
+  if (agentId) {
+    return <AgentDetailClient agentId={agentId} />;
+  }
+
+  return <AgentDirectoryClient />;
 }
 
 export default function AgentPage() {

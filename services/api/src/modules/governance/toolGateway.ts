@@ -25,6 +25,15 @@ import type { PermissionLevel, RiskLevel, ToolExecutionResult } from "@ai-opc/sh
 
 export type ToolDriver = (params: Record<string, unknown>) => Promise<unknown>;
 
+export const TOOL_ALIASES: Record<string, string> = {
+  tool_hotel_sunright_read: "tool_hotel_dbs_read",
+  tool_hotel_dbs_read: "tool_hotel_sunright_read",
+  tool_hotel_sunright_write: "tool_hotel_dbs_write",
+  tool_hotel_dbs_write: "tool_hotel_sunright_write",
+  tool_hotel_sunright_describe_schema: "tool_hotel_dbs_describe_schema",
+  tool_hotel_dbs_describe_schema: "tool_hotel_sunright_describe_schema",
+};
+
 // Registry — đăng ký driver trong index.ts khi bootstrap
 const toolDrivers = new Map<string, ToolDriver>();
 
@@ -33,10 +42,10 @@ export function registerToolDriver(toolId: string, driver: ToolDriver): void {
 }
 
 export function getToolDriver(toolId: string): ToolDriver | undefined {
-  return toolDrivers.get(toolId);
+  return toolDrivers.get(toolId) || (TOOL_ALIASES[toolId] ? toolDrivers.get(TOOL_ALIASES[toolId]) : undefined);
 }
 
-export class PermissionError extends Error {}
+export class PermissionError extends Error { }
 
 export class ToolGateway {
   async execute(
@@ -79,7 +88,10 @@ export class ToolGateway {
       );
     }
 
-    const tool = await db.tool.findUnique({ where: { id: toolId } });
+    let tool = await db.tool.findUnique({ where: { id: toolId } });
+    if (!tool && TOOL_ALIASES[toolId]) {
+      tool = await db.tool.findUnique({ where: { id: TOOL_ALIASES[toolId] } });
+    }
     if (!tool) {
       throw new Error(`Tool không tồn tại trong registry: ${toolId}`);
     }
@@ -118,7 +130,7 @@ export class ToolGateway {
 
     // 3. Thực thi hành động hợp lệ (không cần duyệt)
     try {
-      const driver = toolDrivers.get(toolId);
+      const driver = getToolDriver(toolId);
       if (!driver) {
         throw new Error(`Chưa đăng ký driver thực thi cho tool: ${toolId}`);
       }
@@ -162,7 +174,7 @@ export class ToolGateway {
     const params = decision.paramsJson
       ? (JSON.parse(decision.paramsJson) as Record<string, unknown>)
       : {};
-    const driver = toolDrivers.get(decision.toolId);
+    const driver = getToolDriver(decision.toolId);
     if (!driver) throw new Error(`Chưa đăng ký driver thực thi cho tool: ${decision.toolId}`);
 
     // VQ-1(a) — Re-check TRƯỚC khi chạy driver: grant có thể bị thu hồi và agent
@@ -244,9 +256,14 @@ export class ToolGateway {
     agentId: string,
     toolId: string
   ): Promise<PermissionLevel | null> {
-    const row = await db.agentToolPermission.findUnique({
+    let row = await db.agentToolPermission.findUnique({
       where: { agentId_toolId: { agentId, toolId } },
     });
+    if (!row && TOOL_ALIASES[toolId]) {
+      row = await db.agentToolPermission.findUnique({
+        where: { agentId_toolId: { agentId, toolId: TOOL_ALIASES[toolId] } },
+      });
+    }
     return (row?.permissionLevel as PermissionLevel) ?? null;
   }
 
@@ -288,11 +305,14 @@ export class ToolGateway {
     // lỗi, chỉ log lỗi ra console. Lọc theo NOTIFY_DECISION_MIN_RISK để Founder
     // tự quyết định ngưỡng nào đáng làm phiền (mặc định R0 = báo tất cả).
     if (riskRank(tool.riskLevel as RiskLevel) >= riskRank(env.notifyDecisionMinRisk)) {
+      const task = taskId ? await db.task.findUnique({ where: { id: taskId } }) : null;
+      const taskInfo = task ? `📋 Task: #${task.id.slice(0, 8)} - ${task.title}\n` : "";
       void notifyFounder({
         category: "DECISION",
         title: `Cần duyệt: ${tool.name} (${tool.riskLevel})`,
-        message: `Agent "${agentId}" yêu cầu chạy tool "${tool.name}".\nRisk: ${tool.riskLevel}\n\nVào Web app (cột "Chờ phê duyệt") để duyệt hoặc từ chối.`,
+        message: `${taskInfo}🤖 Agent: "${agentId}"\n⚠️ Risk: ${tool.riskLevel}\n📝 Hành động: Yêu cầu chạy tool "${tool.name}".\n\nBấm nút bên dưới hoặc vào Web app (cột "Chờ phê duyệt") để duyệt/từ chối.`,
         severity: tool.riskLevel === "R4" ? "critical" : tool.riskLevel === "R3" ? "warning" : "info",
+        decisionId: id,
       }).catch((err) => {
         // eslint-disable-next-line no-console
         console.error("[ToolGateway] Gửi thông báo Decision Package lỗi:", err);

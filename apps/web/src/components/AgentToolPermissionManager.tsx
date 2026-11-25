@@ -144,11 +144,13 @@ export function AgentToolPermissionManager({
   agentName,
   permissions,
   onUpdated,
+  readOnly = false,
 }: {
   agentId: string;
   agentName: string;
   permissions: ToolPermissionRow[];
   onUpdated: () => void;
+  readOnly?: boolean;
 }) {
   const [allTools, setAllTools] = useState<ToolItem[]>([]);
   const [showGrantModal, setShowGrantModal] = useState(false);
@@ -280,28 +282,35 @@ export function AgentToolPermissionManager({
           </div>
         </div>
 
-        <div className="flex items-center gap-2">
-          <button
-            type="button"
-            onClick={() => {
-              setCreateError("");
-              setShowCreateModal(true);
-            }}
-            className="inline-flex items-center gap-1.5 rounded-xl border border-border/80 bg-canvas/80 px-3 py-1.5 text-xs font-medium text-zinc-300 hover:border-zinc-600 hover:bg-white/5 transition-all cursor-pointer shadow-sm"
-          >
-            <Plus className="h-3.5 w-3.5 text-accent" />
-            <span>Tạo Tool Mới</span>
-          </button>
+        {!readOnly ? (
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => {
+                setCreateError("");
+                setShowCreateModal(true);
+              }}
+              className="inline-flex items-center gap-1.5 rounded-xl border border-border/80 bg-canvas/80 px-3 py-1.5 text-xs font-medium text-zinc-300 hover:border-zinc-600 hover:bg-white/5 transition-all cursor-pointer shadow-sm"
+            >
+              <Plus className="h-3.5 w-3.5 text-accent" />
+              <span>Tạo Tool Mới</span>
+            </button>
 
-          <button
-            type="button"
-            onClick={() => openGrantModalForTool()}
-            className="inline-flex items-center gap-1.5 rounded-xl bg-accent px-3.5 py-1.5 text-xs font-semibold text-black hover:bg-accent/90 transition-all cursor-pointer shadow-sm"
-          >
+            <button
+              type="button"
+              onClick={() => openGrantModalForTool()}
+              className="inline-flex items-center gap-1.5 rounded-xl bg-accent px-3.5 py-1.5 text-xs font-semibold text-black hover:bg-accent/90 transition-all cursor-pointer shadow-sm"
+            >
+              <Shield className="h-3.5 w-3.5" />
+              <span>+ Cấp Quyền Tool</span>
+            </button>
+          </div>
+        ) : (
+          <span className="inline-flex items-center gap-1.5 rounded-lg border border-cyan-500/30 bg-cyan-950/40 px-2.5 py-1 text-xs font-medium text-cyan-400">
             <Shield className="h-3.5 w-3.5" />
-            <span>+ Cấp Quyền Tool</span>
-          </button>
-        </div>
+            <span>Chỉ xem quyền (Read-only)</span>
+          </span>
+        )}
       </div>
 
       {/* Permissions List */}
@@ -311,13 +320,15 @@ export function AgentToolPermissionManager({
           <p className="text-zinc-500">
             Theo nguyên tắc <em>Least Privilege</em>, Agent chỉ có thể gọi Tool khi được Founder cấp quyền từ L1 đến L6.
           </p>
-          <button
-            type="button"
-            onClick={() => openGrantModalForTool()}
-            className="inline-flex items-center gap-1.5 rounded-lg bg-white/10 px-3 py-1 text-xs text-zinc-200 hover:bg-white/20 transition-colors"
-          >
-            <Plus className="h-3 w-3 text-accent" /> Cấp quyền ngay
-          </button>
+          {!readOnly && (
+            <button
+              type="button"
+              onClick={() => openGrantModalForTool()}
+              className="inline-flex items-center gap-1.5 rounded-lg bg-white/10 px-3 py-1 text-xs text-zinc-200 hover:bg-white/20 transition-colors"
+            >
+              <Plus className="h-3 w-3 text-accent" /> Cấp quyền ngay
+            </button>
+          )}
         </div>
       ) : (
         <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-2 lg:grid-cols-3">
@@ -345,24 +356,26 @@ export function AgentToolPermissionManager({
                       <p className="font-mono text-[10px] text-zinc-500 truncate">{p.toolId}</p>
                     </div>
 
-                    <div className="flex items-center gap-1 shrink-0 opacity-80 group-hover:opacity-100 transition-opacity">
-                      <button
-                        type="button"
-                        onClick={() => openGrantModalForTool(p.toolId, p.permissionLevel)}
-                        title="Chỉnh sửa quyền"
-                        className="rounded p-1 text-zinc-400 hover:bg-white/10 hover:text-zinc-200 transition-colors cursor-pointer"
-                      >
-                        <Edit2 className="h-3.5 w-3.5" />
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => handleRemovePermission(p.toolId, p.tool.name)}
-                        title="Gỡ quyền khỏi Agent"
-                        className="rounded p-1 text-zinc-400 hover:bg-rose-500/20 hover:text-rose-400 transition-colors cursor-pointer"
-                      >
-                        <Trash2 className="h-3.5 w-3.5" />
-                      </button>
-                    </div>
+                    {!readOnly && (
+                      <div className="flex items-center gap-1 shrink-0 opacity-80 group-hover:opacity-100 transition-opacity">
+                        <button
+                          type="button"
+                          onClick={() => openGrantModalForTool(p.toolId, p.permissionLevel)}
+                          title="Chỉnh sửa quyền"
+                          className="rounded p-1 text-zinc-400 hover:bg-white/10 hover:text-zinc-200 transition-colors cursor-pointer"
+                        >
+                          <Edit2 className="h-3.5 w-3.5" />
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleRemovePermission(p.toolId, p.tool.name)}
+                          title="Gỡ quyền khỏi Agent"
+                          className="rounded p-1 text-zinc-400 hover:bg-rose-500/20 hover:text-rose-400 transition-colors cursor-pointer"
+                        >
+                          <Trash2 className="h-3.5 w-3.5" />
+                        </button>
+                      </div>
+                    )}
                   </div>
 
                   {p.tool.description && (

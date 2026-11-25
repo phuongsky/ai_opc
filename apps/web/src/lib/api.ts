@@ -4,7 +4,83 @@
  * Authorization header. Khi server trả 401, tự redirect về /login.
  */
 
-const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+const FALLBACK_HOSTS = ["http://127.0.0.1:8000", "http://localhost:8000"];
+
+function resolveInitialApiBase(): string {
+  if (process.env.NEXT_PUBLIC_API_URL) return process.env.NEXT_PUBLIC_API_URL;
+  if (typeof window !== "undefined") {
+    const saved = localStorage.getItem("aiopc_api_host");
+    if (saved && FALLBACK_HOSTS.includes(saved)) return saved;
+  }
+  // Mặc định ưu tiên 127.0.0.1 trên desktop để tránh lỗi IPv6 DNS resolution của localhost trên Windows
+  return "http://127.0.0.1:8000";
+}
+
+let activeApiHost = resolveInitialApiBase();
+export const API_BASE = activeApiHost;
+
+const originalFetch =
+  typeof globalThis !== "undefined" && typeof globalThis.fetch === "function"
+    ? globalThis.fetch.bind(globalThis)
+    : (input: RequestInfo | URL, init?: RequestInit) => globalThis.fetch(input, init);
+
+/**
+ * Smart Fetch Client:
+ * 1. Tự động luân chuyển giữa 127.0.0.1 và localhost khi gặp lỗi kết nối (Failed to fetch).
+ * 2. Tự động chờ và thử lại tối đa 6 lượt (mỗi lượt 1s) khi Backend Sidecar đang khởi động.
+ * 3. Ghi nhớ host hoạt động tốt nhất vào localStorage để tăng tốc các yêu cầu tiếp theo.
+ */
+async function fetchWithRetry(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
+  const urlStr = typeof input === "string" ? input : input instanceof URL ? input.toString() : "";
+  let lastError: any = null;
+  const maxRetries = 6;
+
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    // Sắp xếp các host: host đang active đứng đầu
+    const candidateHosts = [activeApiHost, ...FALLBACK_HOSTS.filter((h) => h !== activeApiHost)];
+
+    for (const host of candidateHosts) {
+      let targetInput = input;
+      if (urlStr) {
+        for (const altHost of FALLBACK_HOSTS) {
+          if (urlStr.startsWith(altHost)) {
+            const pathSuffix = urlStr.substring(altHost.length);
+            targetInput = `${host}${pathSuffix}`;
+            break;
+          }
+        }
+      }
+
+      try {
+        const res = await originalFetch(targetInput, init);
+        if (host !== activeApiHost) {
+          activeApiHost = host;
+          if (typeof window !== "undefined") {
+            try {
+              localStorage.setItem("aiopc_api_host", host);
+            } catch {}
+          }
+        }
+        return res;
+      } catch (err: any) {
+        lastError = err;
+        // Chỉ thử lại với lỗi mạng (Failed to fetch / Connection refused)
+        const isNetworkErr = err?.name === "TypeError" || String(err?.message || "").toLowerCase().includes("fetch");
+        if (!isNetworkErr) {
+          throw err;
+        }
+      }
+    }
+
+    if (attempt < maxRetries) {
+      await new Promise((r) => setTimeout(r, 1000));
+    }
+  }
+
+  throw lastError || new Error("Failed to fetch");
+}
+
+const fetch = fetchWithRetry;
 
 // ---- Token helpers -----------------------------------------------------
 
@@ -63,12 +139,39 @@ async function handleResponse(res: Response) {
 
 // ---- Auth --------------------------------------------------------------
 
-export async function fetchAuthConfig() {
+export interface AuthChannelsConfig {
+  googleLoginEnabled: boolean;
+  googleClientId: string;
+  googleConfigured: boolean;
+  zaloLoginEnabled: boolean;
+}
+
+export async function fetchAuthConfig(): Promise<AuthChannelsConfig> {
   const res = await fetch(`${API_BASE}/api/auth/config`);
   if (!res.ok) {
-    return { googleClientId: "", googleConfigured: false };
+    return { googleLoginEnabled: false, googleClientId: "", googleConfigured: false, zaloLoginEnabled: true };
   }
-  return res.json() as Promise<{ googleClientId: string; googleConfigured: boolean }>;
+  return res.json() as Promise<AuthChannelsConfig>;
+}
+
+export async function fetchAuthChannelsSettings(): Promise<AuthChannelsConfig> {
+  const res = await fetch(`${API_BASE}/api/settings/auth-channels`, {
+    headers: authHeaders(),
+  });
+  return handleResponse(res);
+}
+
+export async function updateAuthChannelsSettings(payload: {
+  googleLoginEnabled: boolean;
+  googleClientId: string;
+  zaloLoginEnabled?: boolean;
+}): Promise<{ status: string; message: string; config: AuthChannelsConfig }> {
+  const res = await fetch(`${API_BASE}/api/settings/auth-channels`, {
+    method: "PUT",
+    headers: authHeaders(),
+    body: JSON.stringify(payload),
+  });
+  return handleResponse(res);
 }
 
 export async function loginWithGoogle(credentialOrIdToken: string) {
@@ -165,7 +268,7 @@ export async function verify2fa(pendingToken: string, code: string) {
 
 export async function fetchMe() {
   const res = await fetch(`${API_BASE}/api/auth/me`, { headers: authHeaders() });
-  return handleResponse(res) as Promise<{ id: string; email: string; totpEnabled: boolean }>;
+  return handleResponse(res) as Promise<{ id: string; email: string; role?: string; totpEnabled: boolean }>;
 }
 
 export async function logout() {
@@ -305,6 +408,56 @@ export async function updateTaskDeliverable(id: string, result: string) {
   return handleResponse(res);
 }
 
+export async function fetchTrashTasks() {
+  const res = await fetch(`${API_BASE}/api/tasks/trash/list`, { headers: authHeaders() });
+  return handleResponse(res);
+}
+
+export async function fetchTrashCount(): Promise<{ count: number }> {
+  const res = await fetch(`${API_BASE}/api/tasks/trash/count`, { headers: authHeaders() });
+  return handleResponse(res);
+}
+
+export async function moveTaskToTrash(id: string) {
+  const res = await fetch(`${API_BASE}/api/tasks/${id}/trash`, {
+    method: "POST",
+    headers: authHeaders(),
+  });
+  return handleResponse(res);
+}
+
+export async function restoreTaskFromTrash(id: string) {
+  const res = await fetch(`${API_BASE}/api/tasks/${id}/restore`, {
+    method: "POST",
+    headers: authHeaders(),
+  });
+  return handleResponse(res);
+}
+
+export async function permanentlyDeleteTask(id: string) {
+  const res = await fetch(`${API_BASE}/api/tasks/${id}`, {
+    method: "DELETE",
+    headers: authHeaders(),
+  });
+  return handleResponse(res);
+}
+
+export async function emptyTrashTasks() {
+  const res = await fetch(`${API_BASE}/api/tasks/trash/empty`, {
+    method: "POST",
+    headers: authHeaders(),
+  });
+  return handleResponse(res);
+}
+
+export async function moveAllTasksToTrash(): Promise<{ status: string; count: number }> {
+  const res = await fetch(`${API_BASE}/api/tasks/trash/all`, {
+    method: "POST",
+    headers: authHeaders(),
+  });
+  return handleResponse(res);
+}
+
 
 // ---- Audit logs --------------------------------------------------------
 
@@ -428,6 +581,41 @@ export async function updateNotificationPreferences(preferences: Record<string, 
     body: JSON.stringify(preferences),
   });
   return handleResponse(res);
+}
+
+export async function resetNotificationPreferences(): Promise<{
+  ok: boolean;
+  message: string;
+  preferences: any;
+  status: any;
+}> {
+  const res = await fetch(`${API_BASE}/api/notifications/reset`, {
+    method: "POST",
+    headers: authHeaders(),
+  });
+  return handleResponse(res);
+}
+
+/**
+ * Gửi tin nhắn tạm biệt tới kênh cụ thể (gọi ngay khi Admin toggle tắt kênh,
+ * trước khi bấm Lưu). Lỗi không throw — chỉ log console.
+ */
+export async function sendChannelFarewell(
+  channelId: "telegram" | "zalo" | "zaloBot" | "email"
+): Promise<void> {
+  try {
+    const res = await fetch(`${API_BASE}/api/notifications/farewell`, {
+      method: "POST",
+      headers: authHeaders(),
+      body: JSON.stringify({ channelId }),
+    });
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}));
+      console.warn("[API] sendChannelFarewell thất bại:", body);
+    }
+  } catch (err) {
+    console.warn("[API] sendChannelFarewell lỗi mạng:", err);
+  }
 }
 
 export async function sendTestNotification(payload?: {
@@ -613,11 +801,13 @@ export interface LlmSettingsData {
   customLlmUrl: string;
   customLlmApiKeyMasked: string | null;
   orchestratorModel: string;
+  embeddingApiKeyMasked: string | null;
   temperature: number;
   hasGeminiKey: boolean;
   hasOpenAiKey: boolean;
   hasAnthropicKey: boolean;
   hasCustomUrl: boolean;
+  hasEmbeddingKey: boolean;
   statusDescription: string;
   resolved: {
     provider: string;
@@ -646,12 +836,21 @@ export async function updateLlmSettings(data: {
   customLlmUrl?: string | null;
   customLlmApiKey?: string | null;
   orchestratorModel?: string | null;
+  embeddingApiKey?: string | null;
   temperature?: number | null;
 }) {
   const res = await fetch(`${API_BASE}/api/settings/llm`, {
     method: "PUT",
     headers: authHeaders(),
     body: JSON.stringify(data),
+  });
+  return handleResponse(res);
+}
+
+export async function resetLlmSettings(): Promise<{ status: string; message: string; settings: any }> {
+  const res = await fetch(`${API_BASE}/api/settings/llm/reset`, {
+    method: "POST",
+    headers: authHeaders(),
   });
   return handleResponse(res);
 }
@@ -726,3 +925,287 @@ export async function applyOnboardingPlan(
   });
   return handleResponse(res);
 }
+
+// ---- Dynamic System Dictionary (Từ điển quy ước động) -----------------
+
+export interface SystemLookupItem {
+  id: string;
+  category: string;
+  rawCode: number;
+  standardKey: string;
+  displayName: string;
+  description: string | null;
+  isActive: boolean;
+  updatedAt: string;
+}
+
+export interface SystemLookupsResponse {
+  items: SystemLookupItem[];
+  toolDescription: string;
+}
+
+export async function fetchSystemLookups(category?: string): Promise<SystemLookupsResponse> {
+  const url = new URL(`${API_BASE}/api/settings/lookups`);
+  if (category) url.searchParams.set("category", category);
+  const res = await fetch(url.toString(), { headers: authHeaders() });
+  return handleResponse(res);
+}
+
+export async function upsertSystemLookup(data: {
+  id?: string;
+  category: string;
+  rawCode: number;
+  standardKey: string;
+  displayName: string;
+  description?: string | null;
+  isActive?: boolean;
+}): Promise<{ status: string; item: SystemLookupItem; toolDescription: string }> {
+  const res = await fetch(`${API_BASE}/api/settings/lookups`, {
+    method: "POST",
+    headers: authHeaders(),
+    body: JSON.stringify(data),
+  });
+  return handleResponse(res);
+}
+
+export async function updateSystemLookup(
+  id: string,
+  data: Partial<Omit<SystemLookupItem, "id" | "updatedAt">>
+): Promise<{ status: string; item: SystemLookupItem; toolDescription: string }> {
+  const res = await fetch(`${API_BASE}/api/settings/lookups/${id}`, {
+    method: "PUT",
+    headers: authHeaders(),
+    body: JSON.stringify(data),
+  });
+  return handleResponse(res);
+}
+
+export async function deleteSystemLookup(id: string): Promise<{ status: string; message: string }> {
+  const res = await fetch(`${API_BASE}/api/settings/lookups/${id}`, {
+    method: "DELETE",
+    headers: authHeaders(),
+  });
+  return handleResponse(res);
+}
+
+export async function resetSystemLookups(): Promise<{ status: string; message: string; items: SystemLookupItem[] }> {
+  const res = await fetch(`${API_BASE}/api/settings/lookups/reset-defaults`, {
+    method: "POST",
+    headers: authHeaders(),
+  });
+  return handleResponse(res);
+}
+
+// ---- System Console Logs API -------------------------------------------
+
+export interface SystemLogItem {
+  id: string;
+  timestamp: string;
+  level: "info" | "warn" | "error" | "debug";
+  message: string;
+  source?: string;
+}
+
+export async function fetchSystemLogs(options?: {
+  limit?: number;
+  level?: string;
+  search?: string;
+}): Promise<{ logs: SystemLogItem[]; total: number }> {
+  const params = new URLSearchParams();
+  if (options?.limit) params.set("limit", String(options.limit));
+  if (options?.level && options.level !== "all") params.set("level", options.level);
+  if (options?.search) params.set("search", options.search);
+
+  const res = await fetch(`${API_BASE}/api/settings/logs?${params.toString()}`, {
+    headers: authHeaders(),
+  });
+  return handleResponse(res);
+}
+
+export async function clearSystemLogs(): Promise<{ status: string; message: string; cleared: number }> {
+  const res = await fetch(`${API_BASE}/api/settings/logs`, {
+    method: "DELETE",
+    headers: authHeaders(),
+  });
+  return handleResponse(res);
+}
+
+// ---- RBAC System Permissions API ---------------------------------------
+
+import type {
+  RbacRoleId,
+  RbacModuleId,
+  RbacCommandId,
+  RbacAgentPermission,
+  RbacPermissionsMatrix,
+} from "@ai-opc/shared";
+
+export async function fetchRbacPermissions(): Promise<RbacPermissionsMatrix> {
+  const res = await fetch(`${API_BASE}/api/settings/rbac`, {
+    headers: authHeaders(),
+  });
+  return handleResponse(res);
+}
+
+export async function updateRbacPermissions(data: {
+  permissions?: Partial<Record<RbacRoleId, Partial<Record<RbacModuleId, boolean>>>>;
+  agentPermissions?: Partial<Record<RbacRoleId, Partial<Record<string, RbacAgentPermission>>>>;
+  commandPermissions?: Partial<Record<RbacRoleId, Partial<Record<RbacCommandId, boolean>>>>;
+}): Promise<{ status: string; message: string; matrix: RbacPermissionsMatrix }> {
+  const res = await fetch(`${API_BASE}/api/settings/rbac`, {
+    method: "PUT",
+    headers: authHeaders(),
+    body: JSON.stringify(data),
+  });
+  return handleResponse(res);
+}
+
+export async function resetRbacPermissions(): Promise<{ status: string; message: string; matrix: RbacPermissionsMatrix }> {
+  const res = await fetch(`${API_BASE}/api/settings/rbac/reset-defaults`, {
+    method: "POST",
+    headers: authHeaders(),
+  });
+  return handleResponse(res);
+}
+
+// ---- External Data Source (Database) API -------------------------------
+
+import type { ExternalDbConfig, ExternalDbEngine } from "@ai-opc/shared";
+export type { ExternalDbConfig, ExternalDbEngine };
+
+export async function fetchExternalDbSettings(): Promise<ExternalDbConfig> {
+  const res = await fetch(`${API_BASE}/api/settings/datasource`, {
+    headers: authHeaders(),
+  });
+  return handleResponse(res);
+}
+
+export async function updateExternalDbSettings(
+  payload: Partial<ExternalDbConfig>
+): Promise<{ status: string; message: string; config: ExternalDbConfig }> {
+  const res = await fetch(`${API_BASE}/api/settings/datasource`, {
+    method: "PUT",
+    headers: authHeaders(),
+    body: JSON.stringify(payload),
+  });
+  return handleResponse(res);
+}
+
+export async function testExternalDbConnection(payload?: Partial<ExternalDbConfig>): Promise<{
+  success: boolean;
+  message: string;
+  version?: string;
+  latencyMs?: number;
+  tableCount?: number;
+}> {
+  const res = await fetch(`${API_BASE}/api/settings/datasource/test`, {
+    method: "POST",
+    headers: authHeaders(),
+    body: JSON.stringify(payload || {}),
+  });
+  return handleResponse(res);
+}
+
+// ---- Cockpit Navigation Buttons Config -----------------------------------
+export interface CockpitNavButtonsConfig {
+  showAgents: boolean;
+  showHireAgent?: boolean;
+  showKnowledge: boolean;
+  showSettings: boolean;
+  showSecurity: boolean;
+  defaultEmail?: string;
+}
+
+export async function fetchCockpitNavConfig(email?: string): Promise<CockpitNavButtonsConfig> {
+  const url = new URL(`${API_BASE}/api/settings/cockpit-nav`);
+  if (email) url.searchParams.set("email", email);
+  const res = await fetch(url.toString(), {
+    headers: authHeaders(),
+  });
+  return handleResponse(res);
+}
+
+export async function updateCockpitNavConfig(
+  payload: Partial<CockpitNavButtonsConfig>,
+  email?: string
+): Promise<{ status: string; message: string; config: CockpitNavButtonsConfig }> {
+  const res = await fetch(`${API_BASE}/api/settings/cockpit-nav`, {
+    method: "PUT",
+    headers: authHeaders(),
+    body: JSON.stringify({ ...payload, email }),
+  });
+  return handleResponse(res);
+}
+
+// ---- System Accounts Management & RBAC ------------------------------------
+export interface SystemAccount {
+  id: string;
+  email: string;
+  fullName: string;
+  role: "founder" | "manager" | "operator" | "viewer";
+  status: "active" | "locked";
+  totpEnabled: boolean;
+  createdAt: string;
+  isPrimaryFounder: boolean;
+}
+
+export async function fetchSystemAccounts(): Promise<SystemAccount[]> {
+  const res = await fetch(`${API_BASE}/api/settings/accounts`, {
+    headers: authHeaders(),
+  });
+  return handleResponse(res);
+}
+
+export async function createSystemAccount(payload: {
+  email: string;
+  password: string;
+  fullName?: string;
+  role?: string;
+}): Promise<{ status: string; message: string; account: SystemAccount }> {
+  const res = await fetch(`${API_BASE}/api/settings/accounts`, {
+    method: "POST",
+    headers: authHeaders(),
+    body: JSON.stringify(payload),
+  });
+  return handleResponse(res);
+}
+
+export async function updateSystemAccount(
+  id: string,
+  payload: { role?: string; fullName?: string; status?: "active" | "locked" }
+): Promise<{ status: string; message: string; account: SystemAccount }> {
+  const res = await fetch(`${API_BASE}/api/settings/accounts/${id}`, {
+    method: "PUT",
+    headers: authHeaders(),
+    body: JSON.stringify(payload),
+  });
+  return handleResponse(res);
+}
+
+export async function resetSystemAccountPassword(
+  id: string,
+  password: string
+): Promise<{ success: boolean; message: string }> {
+  const res = await fetch(`${API_BASE}/api/settings/accounts/${id}/password`, {
+    method: "PUT",
+    headers: authHeaders(),
+    body: JSON.stringify({ password }),
+  });
+  return handleResponse(res);
+}
+
+export async function deleteSystemAccount(
+  id: string
+): Promise<{ success: boolean; message: string }> {
+  const res = await fetch(`${API_BASE}/api/settings/accounts/${id}`, {
+    method: "DELETE",
+    headers: authHeaders(),
+  });
+  return handleResponse(res);
+}
+
+
+
+
+
+

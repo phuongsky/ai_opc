@@ -112,10 +112,20 @@ export async function generateContent(
     }
   }
 
+  const cleanSummary = errors
+    .map((e) => e.replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim())
+    .join("\n");
+
   throw new Error(
-    `Tất cả các model và provider LLM đều thất bại:\n${errors.join("\n")}`
+    `Tất cả các model và provider LLM đều thất bại:\n${cleanSummary}`
   );
 }
+
+export {
+  sanitizeApiErrorMessage,
+  stripHtmlAndClean,
+  getStatusFallbackMessage,
+} from "./retry";
 
 export {
   resolveLlm,

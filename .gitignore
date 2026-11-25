@@ -25,7 +25,12 @@ build/
 out/
 .next/
 .turbo/
-src-tauri/target/
+target/
+**/target/
+**/src-tauri/target/
+**/src-tauri/binaries/
+**/src-tauri/gen/
+*.tsbuildinfo
 
 # ==========================================
 # 4. Databases, Session & Runtime Data
@@ -51,6 +56,14 @@ yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
 scratch/
+services/api/src/scratch/
+exports/
+services/api/exports/
+services/api/test*.ts
+services/api/src/scripts/schema_*
+schema_output.txt
+schema_intelio_sunset.json
+scripts/winapp_tools.json
 
 # ==========================================
 # 6. IDEs & AI Assistant Workspace Caches
@@ -63,11 +76,13 @@ scratch/
 .gemini/
 .qodo/
 .cursor/
+.superpowers/
 
 # ==========================================
 # 7. Internal Documents & Private Workspaces
 # ==========================================
 _workspace*
+_folder/
 /ai-company-os*
 02_architect_contract_smoketest*
 SPEC.md
@@ -75,6 +90,7 @@ CLAUDE.md
 USER_GUIDE.md
 docs/sleuth
 docs/superpowers
+docs/dbs
 
 # ==========================================
 # 8. Operating System Metadata

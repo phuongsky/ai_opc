@@ -29,6 +29,9 @@ import {
   Edit3,
   Save,
   X,
+  RotateCcw,
+  ShieldAlert,
+  Trash2,
 } from "lucide-react";
 import type { Task, TaskStatus, RiskLevel } from "@ai-opc/shared";
 import { cleanDeliverableText } from "@ai-opc/shared";
@@ -36,6 +39,7 @@ import {
   ingestKnowledgeDoc,
   sendTaskDeliverableNotification,
   updateTaskDeliverable,
+  requeueTask,
 } from "@/lib/api";
 import { DeliverableEditModal } from "./DeliverableEditModal";
 
@@ -112,6 +116,12 @@ const STATUS_MAP: Record<
     badgeClass: "bg-cyan-500/10 text-cyan-400 border-cyan-500/20",
     dotClass: "bg-cyan-400",
   },
+  TRASH: {
+    label: "Thùng rác",
+    icon: <Trash2 className="h-3.5 w-3.5 text-rose-400" />,
+    badgeClass: "bg-rose-500/10 text-rose-400 border-rose-500/20",
+    dotClass: "bg-rose-400",
+  },
 };
 
 const RISK_BADGES: Record<
@@ -184,7 +194,7 @@ function calculateDuration(startIso?: string | null, endIso?: string | null): st
 
 type TaskFilterStatus = "ALL" | "RUNNING" | "COMPLETED" | "INTERNAL_REVIEW" | "APPROVAL_BLOCKED";
 
-export function AgentTaskHistory({ tasks }: { tasks: Task[] }) {
+export function AgentTaskHistory({ tasks, onRefresh }: { tasks: Task[]; onRefresh?: () => void }) {
   const [search, setSearch] = useState("");
   const [filter, setFilter] = useState<TaskFilterStatus>("ALL");
   const [expandedTaskId, setExpandedTaskId] = useState<string | null>(null);
@@ -204,6 +214,30 @@ export function AgentTaskHistory({ tasks }: { tasks: Task[] }) {
   const [sendingNotifyTaskId, setSendingNotifyTaskId] = useState<string | null>(null);
   const [sentNotifySuccess, setSentNotifySuccess] = useState<{ [id: string]: string }>({});
   const [notifyErrors, setNotifyErrors] = useState<{ [id: string]: string }>({});
+
+  // States for Requeue Actions
+  const [requeuingTaskId, setRequeuingTaskId] = useState<string | null>(null);
+  const [requeueSuccessTaskId, setRequeueSuccessTaskId] = useState<string | null>(null);
+  const [requeueErrorTaskId, setRequeueErrorTaskId] = useState<{ [id: string]: string }>({});
+
+  const handleRequeue = async (task: Task, e: React.MouseEvent) => {
+    e.stopPropagation();
+    setRequeuingTaskId(task.id);
+    setRequeueErrorTaskId((prev) => ({ ...prev, [task.id]: "" }));
+    try {
+      await requeueTask(task.id);
+      setRequeueSuccessTaskId(task.id);
+      setTimeout(() => setRequeueSuccessTaskId(null), 3500);
+      onRefresh?.();
+    } catch (err) {
+      setRequeueErrorTaskId((prev) => ({
+        ...prev,
+        [task.id]: err instanceof Error ? err.message : "Chạy lại task thất bại.",
+      }));
+    } finally {
+      setRequeuingTaskId(null);
+    }
+  };
 
   const getDeliverableText = (task: Task) => {
     if (taskOverrides[task.id] !== undefined) {
@@ -761,11 +795,83 @@ export function AgentTaskHistory({ tasks }: { tasks: Task[] }) {
                                   </p>
                                 )}
 
+                                {/* Requeue Error message */}
+                                {requeueErrorTaskId[t.id] && (
+                                  <p className="mt-2 text-[11px] text-rose-400 bg-rose-500/10 p-2 rounded border border-rose-500/20 flex items-center gap-1.5">
+                                    <AlertTriangle className="h-3.5 w-3.5 shrink-0 text-rose-400" />
+                                    <span>{requeueErrorTaskId[t.id]}</span>
+                                  </p>
+                                )}
+
+                                {/* Requeue Success toast banner */}
+                                {requeueSuccessTaskId === t.id && (
+                                  <p className="mt-2 text-[11px] text-emerald-300 bg-emerald-500/20 p-2 rounded border border-emerald-500/40 flex items-center gap-1.5">
+                                    <Check className="h-3.5 w-3.5 text-emerald-400 shrink-0" />
+                                    <span>Đã gửi lệnh chạy lại (Requeue) thành công! Agent sẽ tiếp tục xử lý.</span>
+                                  </p>
+                                )}
+
                                 {/* Content Box */}
                                 <div className="mt-2.5 flex-1 min-h-[160px] max-h-[420px] overflow-y-auto rounded-lg bg-zinc-950/80 p-3.5 font-sans text-xs text-zinc-200 leading-relaxed border border-emerald-500/20 selection:bg-emerald-500/30">
                                   {hasDeliverable ? (
                                     <div className="whitespace-pre-wrap font-sans text-xs text-zinc-100 leading-relaxed">
                                       {deliverable}
+                                    </div>
+                                  ) : t.status === "BLOCKED" || t.status === "ESCALATED" ? (
+                                    <div className="flex h-full min-h-[140px] flex-col justify-between rounded-lg bg-rose-950/20 border border-rose-500/30 p-3.5">
+                                      <div className="space-y-2">
+                                        <div className="flex items-center justify-between gap-2">
+                                          <span className="flex items-center gap-1.5 font-semibold text-rose-400 text-xs">
+                                            <AlertTriangle className="h-4 w-4 text-rose-400 shrink-0" />
+                                            Task đang bị chặn (Blocked)
+                                          </span>
+                                          <span className="font-mono text-[10px] bg-rose-500/20 text-rose-300 px-2 py-0.5 rounded border border-rose-500/30">
+                                            {t.riskLevel || "R1"}
+                                          </span>
+                                        </div>
+
+                                        <div className="rounded bg-black/50 p-2.5 font-mono text-[11px] text-rose-200 border border-rose-500/20 leading-relaxed whitespace-pre-wrap max-h-36 overflow-y-auto">
+                                          <div className="text-[10px] font-sans font-semibold text-rose-300 mb-1 flex items-center gap-1">
+                                            <ShieldAlert className="h-3.5 w-3.5" />
+                                            Nguyên nhân chi tiết:
+                                          </div>
+                                          {t.result || "Agent cần thêm thông tin hoặc chưa thể hoàn thành yêu cầu (Xem thêm Audit Log bên dưới)."}
+                                        </div>
+                                      </div>
+
+                                      <div className="mt-2.5 pt-2.5 border-t border-rose-500/20 flex flex-wrap items-center justify-between gap-2">
+                                        <p className="text-[11px] text-zinc-400 italic">
+                                          Khắc phục nguyên nhân và bấm chạy lại task:
+                                        </p>
+                                        <div className="flex items-center gap-1.5">
+                                          <button
+                                            type="button"
+                                            onClick={(e) => handleOpenEditModal(t, e)}
+                                            className="inline-flex items-center gap-1 rounded bg-zinc-800 border border-zinc-700 px-2.5 py-1 text-xs text-zinc-300 hover:bg-zinc-700 hover:text-white transition-colors cursor-pointer"
+                                          >
+                                            <Edit3 className="h-3 w-3" />
+                                            <span>Soạn thảo kết quả</span>
+                                          </button>
+                                          <button
+                                            type="button"
+                                            disabled={requeuingTaskId === t.id}
+                                            onClick={(e) => handleRequeue(t, e)}
+                                            className="inline-flex items-center gap-1.5 rounded bg-rose-600 hover:bg-rose-500 text-white px-3 py-1 text-xs font-medium transition-all shadow-sm disabled:opacity-50 cursor-pointer"
+                                          >
+                                            {requeuingTaskId === t.id ? (
+                                              <>
+                                                <Loader2 className="h-3 w-3 animate-spin" />
+                                                <span>Đang gửi lại...</span>
+                                              </>
+                                            ) : (
+                                              <>
+                                                <RotateCcw className="h-3 w-3" />
+                                                <span>Chạy lại (Requeue)</span>
+                                              </>
+                                            )}
+                                          </button>
+                                        </div>
+                                      </div>
                                     </div>
                                   ) : t.status === "COMPLETED" ? (
                                     <div className="flex h-full min-h-[140px] flex-col items-center justify-center text-center text-zinc-500">

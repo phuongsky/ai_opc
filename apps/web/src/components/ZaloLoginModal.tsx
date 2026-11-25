@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import {
   X,
   Copy,
@@ -17,7 +17,10 @@ import {
   CheckCircle2,
   Globe,
   Radio,
+  RefreshCw,
+  Zap,
 } from "lucide-react";
+import { io, Socket } from "socket.io-client";
 import { checkZaloAuthSession, loginWithZaloManual, setToken, fetchZaloStatus } from "@/lib/api";
 
 interface ZaloLoginModalProps {
@@ -28,13 +31,31 @@ interface ZaloLoginModalProps {
   initialTab?: "popup" | "apiGuide" | "manual";
 }
 
+// const SAMPLE_PAYLOAD = {
+//   event: "ZALO_AUTH_SUCCESS",
+//   timestamp: new Date().toISOString(),
+//   userId: "637619582990873903",
+//   context: {
+//     uid: "637619582990873903",
+//     imei: "23ce4d45-9169-475c-976b-64d1a6f9eef9-a69b52f9d7f760edf3fd052bcda2542f",
+//     cookie: [{ key: "zpw_sek", value: "sample_zalo_session_token_xyz" }],
+//     userAgent:
+//       "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
+//     secretKey: "sample_secret_key",
+//     sessionKey: "sample_session_key",
+//   },
+//   customParams: {
+//     systemId: "ai-opc-cockpit",
+//   },
+// };
+
 const SAMPLE_PAYLOAD = {
   event: "ZALO_AUTH_SUCCESS",
   timestamp: new Date().toISOString(),
-  userId: "637619582990873903",
+  userId: "637...",
   context: {
-    uid: "637619582990873903",
-    imei: "23ce4d45-9169-475c-976b-64d1a6f9eef9-a69b52f9d7f760edf3fd052bcda2542f",
+    uid: "637...",
+    imei: "23ce4d45-9...",
     cookie: [{ key: "zpw_sek", value: "sample_zalo_session_token_xyz" }],
     userAgent:
       "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
@@ -47,7 +68,7 @@ const SAMPLE_PAYLOAD = {
 };
 
 /**
- * Hàm mở Popup xác thực Zalo chuẩn theo mục 2 trong Zalo_guide.md:
+ * Hàm mở Popup xác thực Zalo Portal nội bộ:
  * - Căn giữa màn hình (540x720)
  * - Truyền targetUrl, customParams, autoStart=true
  * - Lắng nghe postMessage ZALO_AUTH_SUCCESS
@@ -72,8 +93,11 @@ export function openZaloAuthPopup(options?: {
     })
   );
 
-  const portalBase = options?.zaloPortalUrl || `http://${hostname}:3001`;
-  const zaloAuthUrl = `${portalBase}/?targetUrl=${targetWebhook}&customParams=${customParams}&autoStart=true`;
+  const defaultPortal =
+    process.env.NEXT_PUBLIC_ZALO_PORTAL_URL ||
+    (typeof window !== "undefined" ? `${window.location.origin}/zalo-portal` : "/zalo-portal");
+  const portalBase = (options?.zaloPortalUrl || defaultPortal).replace(/\/+$/, "");
+  const zaloAuthUrl = `${portalBase}${portalBase.includes("?") ? "&" : "/?"}targetUrl=${targetWebhook}&customParams=${customParams}&autoStart=true`;
 
   const width = 540;
   const height = 720;
@@ -86,7 +110,7 @@ export function openZaloAuthPopup(options?: {
     `width=${width},height=${height},top=${top},left=${left},resizable=yes,scrollbars=yes`
   );
 
-  // Lắng nghe tín hiệu postMessage từ Zalo Auth Portal theo Zalo_guide.md dòng 68-76
+  // Lắng nghe tín hiệu postMessage từ Zalo Auth Portal
   const listener = (event: MessageEvent) => {
     if (
       event.data &&
@@ -104,80 +128,171 @@ export function openZaloAuthPopup(options?: {
   return popup;
 }
 
-export function ZaloLoginModal({ isOpen, onClose, onSuccess, autoOpenPopup, initialTab = "apiGuide" }: ZaloLoginModalProps) {
+export function ZaloLoginModal({
+  isOpen,
+  onClose,
+  onSuccess,
+  autoOpenPopup,
+  initialTab = "popup",
+}: ZaloLoginModalProps) {
   const [activeTab, setActiveTab] = useState<"popup" | "apiGuide" | "manual">(initialTab);
   const [codeLang, setCodeLang] = useState<"express" | "nextjs" | "popupJs">("nextjs");
   const [copiedKey, setCopiedKey] = useState<string | null>(null);
   const [webhookUrl, setWebhookUrl] = useState("http://localhost:8000/api/zalo/webhook");
   const [nextWebhookUrl, setNextWebhookUrl] = useState("http://localhost:3000/api/zalo/webhook");
-  const [zaloPortalUrl, setZaloPortalUrl] = useState("http://localhost:3001");
-  const [pollingStatus, setPollingStatus] = useState<"listening" | "success" | "idle">("listening");
+  const [zaloPortalUrl, setZaloPortalUrl] = useState("/zalo-portal");
+
+  // State cho In-App Live QR
+  const [qrImage, setQrImage] = useState<string | null>(null);
+  const [qrStep, setQrStep] = useState<"idle" | "init" | "waiting_scan" | "scanned" | "qr_expired" | "logged_in" | "error">("idle");
+  const [qrStatusText, setQrStatusText] = useState("Đang kết nối Zalo Gateway...");
   const [detectedUid, setDetectedUid] = useState<string | null>(null);
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
+
+  const [manualJson, setManualJson] = useState(JSON.stringify(SAMPLE_PAYLOAD, null, 2));
+  const [manualLoading, setManualLoading] = useState(false);
+  const [manualError, setManualError] = useState("");
+  const [popupOpened, setPopupOpened] = useState(false);
+
+  const socketRef = useRef<Socket | null>(null);
+  const pollTimerRef = useRef<NodeJS.Timeout | null>(null);
 
   useEffect(() => {
     if (isOpen && initialTab) {
       setActiveTab(initialTab);
     }
   }, [isOpen, initialTab]);
-  const [existingStatus, setExistingStatus] = useState<{ connected: boolean; uid: string | null } | null>(null);
-  const [manualJson, setManualJson] = useState(JSON.stringify(SAMPLE_PAYLOAD, null, 2));
-  const [manualLoading, setManualLoading] = useState(false);
-  const [manualError, setManualError] = useState("");
-  const [popupOpened, setPopupOpened] = useState(false);
 
-  const pollTimerRef = useRef<NodeJS.Timeout | null>(null);
-
-  // 1. Cập nhật webhook URL chuẩn dựa trên hostname hiện tại
+  // Cập nhật webhook URL chuẩn dựa trên hostname hiện tại
   useEffect(() => {
     if (typeof window !== "undefined") {
       const hostname = window.location.hostname || "localhost";
       const apiBase = process.env.NEXT_PUBLIC_API_URL || `http://${hostname}:8000`;
       setWebhookUrl(`${apiBase}/api/zalo/webhook`);
       setNextWebhookUrl(`${window.location.origin}/api/zalo/webhook`);
-      setZaloPortalUrl(`http://${hostname}:3001`);
+      setZaloPortalUrl(
+        process.env.NEXT_PUBLIC_ZALO_PORTAL_URL || `${window.location.origin}/zalo-portal`
+      );
     }
-    // Lấy thông tin phiên hiện có (nếu có)
-    fetchZaloStatus()
-      .then((st) => {
-        if (st.connected) {
-          setExistingStatus({ connected: true, uid: st.uid });
-        }
-      })
-      .catch(() => {});
   }, []);
 
-  // 2. Tự động mở Popup khi modal hiển thị (nếu autoOpenPopup được bật)
-  useEffect(() => {
-    if (isOpen && autoOpenPopup && !popupOpened) {
-      const p = openZaloAuthPopup({
-        targetWebhookUrl: webhookUrl,
-        zaloPortalUrl,
-        onAuthSuccess: handleZaloSuccessSignal,
-      });
-      if (p) setPopupOpened(true);
-    }
-  }, [isOpen, autoOpenPopup, popupOpened, webhookUrl, zaloPortalUrl]);
-
-  // 3. Xử lý tín hiệu thành công
-  const handleZaloSuccessSignal = (payload: any) => {
+  // Xử lý tín hiệu thành công
+  const handleZaloSuccessSignal = useCallback((payload: any) => {
     const uid = payload?.userId || payload?.context?.uid || "Zalo User";
     setDetectedUid(uid);
-    setPollingStatus("success");
+    setQrStep("logged_in");
+    setQrStatusText(`Đã xác thực thành công tài khoản Zalo (UID: ${uid})`);
 
-    // Kiểm tra token từ backend
+    const token = payload?.token;
+    if (token) {
+      setToken(token);
+      setTimeout(() => {
+        onSuccess(token);
+      }, 700);
+      return;
+    }
+
+    // Fallback kiểm tra token từ backend
     checkZaloAuthSession()
       .then((res) => {
         if (res.authenticated && res.token) {
           setToken(res.token);
           setTimeout(() => {
             onSuccess(res.token!);
-          }, 800);
+          }, 700);
         }
       })
-      .catch(() => {});
-  };
+      .catch(() => { });
+  }, [onSuccess]);
 
-  // 4. Lắng nghe thông điệp postMessage từ Popup theo Zalo_guide.md
+  // Khởi tạo luồng Socket.io QR khi mở tab "popup" (Live QR Scan)
+  const startLiveQrSession = useCallback(() => {
+    setErrorMessage(null);
+    setQrStep("init");
+    setQrStatusText("Đang kết nối Zalo Gateway & khởi tạo mã QR...");
+    setQrImage(null);
+
+    const apiBase = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+
+    if (socketRef.current) {
+      socketRef.current.disconnect();
+    }
+
+    const socket = io(apiBase, {
+      path: "/socket.io",
+      transports: ["websocket", "polling"],
+      reconnectionAttempts: 5,
+    });
+
+    socketRef.current = socket;
+
+    socket.on("connect", () => {
+      console.log("[ZaloModal] Đã kết nối Socket.io tới API:", socket.id);
+      socket.emit("start-login", {
+        targetAppUrl: `${apiBase}/api/zalo/webhook`,
+        customParams: {
+          source: "ZaloLoginModal_InApp",
+          timestamp: Date.now(),
+        },
+      });
+    });
+
+    socket.on("qr-received", (data: { qrImage: string; message: string }) => {
+      console.log("[ZaloModal] Đã nhận mã QR từ Zalo Gateway");
+      setQrImage(data.qrImage);
+      setQrStep("waiting_scan");
+      setQrStatusText(data.message || "Mã QR đã sẵn sàng! Mở app Zalo trên điện thoại để quét mã.");
+    });
+
+    socket.on("status-update", (data: { step: string; message: string }) => {
+      console.log("[ZaloModal] Status update:", data);
+      if (data.step === "waiting_scan") {
+        setQrStep("waiting_scan");
+      } else if (data.step === "scanned") {
+        setQrStep("scanned");
+      } else if (data.step === "qr_expired") {
+        setQrStep("qr_expired");
+      } else if (data.step === "logged_in") {
+        setQrStep("logged_in");
+      }
+      setQrStatusText(data.message);
+    });
+
+    socket.on("login-complete", (data: any) => {
+      console.log("[ZaloModal] Login complete:", data);
+      handleZaloSuccessSignal(data);
+    });
+
+    socket.on("login-error", (data: { message: string }) => {
+      console.error("[ZaloModal] Login error:", data);
+      setQrStep("error");
+      setErrorMessage(data.message || "Phiên tạo mã QR gặp lỗi.");
+      setQrStatusText("Không thể tạo mã QR Zalo.");
+    });
+
+    socket.on("connect_error", (err) => {
+      console.warn("[ZaloModal] Lỗi kết nối Socket:", err.message);
+      setQrStep("error");
+      setErrorMessage(`Không thể kết nối máy chủ Zalo Bridge (${err.message}). Vui lòng kiểm tra API.`);
+    });
+  }, [handleZaloSuccessSignal]);
+
+  // Quản lý lifecycle của Socket.io theo trạng thái mở Modal
+  useEffect(() => {
+    if (isOpen && activeTab === "popup" && qrStep === "idle") {
+      startLiveQrSession();
+    }
+
+    return () => {
+      if (!isOpen && socketRef.current) {
+        socketRef.current.disconnect();
+        socketRef.current = null;
+        setQrStep("idle");
+      }
+    };
+  }, [isOpen, activeTab, qrStep, startLiveQrSession]);
+
+  // Lắng nghe postMessage từ Popup (nếu người dùng mở popup ngoài)
   useEffect(() => {
     if (!isOpen) return;
 
@@ -195,41 +310,7 @@ export function ZaloLoginModal({ isOpen, onClose, onSuccess, autoOpenPopup, init
     return () => {
       window.removeEventListener("message", handleMessage);
     };
-  }, [isOpen]);
-
-  // 5. Polling song song từ Backend để nhận phiên tự động khi Webhook kích hoạt
-  useEffect(() => {
-    if (!isOpen || pollingStatus === "success") {
-      if (pollTimerRef.current) clearInterval(pollTimerRef.current);
-      return;
-    }
-
-    setPollingStatus("listening");
-
-    async function poll() {
-      try {
-        const res = await checkZaloAuthSession();
-        if (res.authenticated && res.token) {
-          setPollingStatus("success");
-          setDetectedUid(res.userId || "Zalo User");
-          setToken(res.token);
-          if (pollTimerRef.current) clearInterval(pollTimerRef.current);
-          setTimeout(() => {
-            onSuccess(res.token!);
-          }, 800);
-        }
-      } catch {
-        // Tiếp tục polling
-      }
-    }
-
-    poll();
-    pollTimerRef.current = setInterval(poll, 1200);
-
-    return () => {
-      if (pollTimerRef.current) clearInterval(pollTimerRef.current);
-    };
-  }, [isOpen, pollingStatus, onSuccess]);
+  }, [isOpen, handleZaloSuccessSignal]);
 
   if (!isOpen) return null;
 
@@ -260,12 +341,12 @@ export function ZaloLoginModal({ isOpen, onClose, onSuccess, autoOpenPopup, init
       }
 
       const res = await loginWithZaloManual(parsed);
-      setPollingStatus("success");
+      setQrStep("logged_in");
       setDetectedUid(res.userId || "Zalo User");
       setToken(res.token);
       setTimeout(() => {
         onSuccess(res.token);
-      }, 800);
+      }, 700);
     } catch (err: any) {
       setManualError(err.message || "Xác thực phiên Zalo thất bại.");
     } finally {
@@ -274,7 +355,7 @@ export function ZaloLoginModal({ isOpen, onClose, onSuccess, autoOpenPopup, init
   };
 
   const codeSnippets = {
-    nextjs: `// Next.js App Router: app/api/zalo-auth/route.ts (Zalo_guide.md dòng 104)
+    nextjs: `// Next.js App Router: app/api/zalo/webhook/route.ts
 import { NextResponse } from 'next/server';
 
 export async function POST(request: Request) {
@@ -286,7 +367,7 @@ export async function POST(request: Request) {
   // Lưu context vào Database / chuyển tiếp sang Backend API
   return NextResponse.json({ success: true, received: true });
 }`,
-    express: `// Node.js / Express: app.post('/api/zalo/webhook') (Zalo_guide.md dòng 83)
+    express: `// Node.js / Express: app.post('/api/zalo/webhook')
 app.post('/api/zalo/webhook', async (req, res) => {
   const { event, userId, context, customParams } = req.body;
   if (event === 'ZALO_AUTH_SUCCESS') {
@@ -307,14 +388,14 @@ app.post('/api/zalo/webhook', async (req, res) => {
   }
   return res.status(400).json({ error: 'Sự kiện không hợp lệ' });
 });`,
-    popupJs: `// Giao diện gọi Popup chuẩn (Zalo_guide.md dòng 44)
+    popupJs: `// Giao diện gọi Popup chuẩn (Self-hosted Portal)
 function openZaloAuthPopup() {
   const targetWebhook = encodeURIComponent('http://localhost:8000/api/zalo/webhook');
   const customParams = encodeURIComponent(JSON.stringify({
     currentUserId: "founder",
     tenantId: "ai_opc_corp"
   }));
-  const zaloAuthUrl = \`http://localhost:3001/?targetUrl=\${targetWebhook}&customParams=\${customParams}&autoStart=true\`;
+  const zaloAuthUrl = \`/zalo-portal?targetUrl=\${targetWebhook}&customParams=\${customParams}&autoStart=true\`;
 
   // Căn giữa màn hình để mở popup (540x720)
   const width = 540, height = 720;
@@ -335,7 +416,7 @@ function openZaloAuthPopup() {
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-5 bg-black/80 backdrop-blur-sm animate-in fade-in duration-200"
+      className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-5 bg-black/80 backdrop-blur-md animate-in fade-in duration-200"
       onClick={onClose}
     >
       <div
@@ -343,9 +424,9 @@ function openZaloAuthPopup() {
         onClick={(e) => e.stopPropagation()}
       >
         {/* Header with Zalo Brand Gradient */}
-        <div className="flex items-center justify-between px-5 py-4 border-b border-border/70 bg-gradient-to-r from-blue-950/70 via-zinc-900 to-zinc-900">
+        <div className="flex items-center justify-between px-5 py-4 border-b border-border/70 bg-gradient-to-r from-blue-950/80 via-zinc-900 to-zinc-900">
           <div className="flex items-center gap-3">
-            <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-[#0068FF] text-white shadow-lg shadow-blue-500/40">
+            <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-[#0068FF] text-white shadow-lg shadow-blue-500/40 shrink-0">
               <svg className="h-6 w-6 fill-current" viewBox="0 0 24 24">
                 <path d="M12 2C6.48 2 2 6.48 2 12c0 1.85.5 3.58 1.38 5.08L2 22l5.12-1.35C8.55 21.49 10.23 22 12 22c5.52 0 10-4.48 10-10S17.52 2 12 2zm1 14h-2v-2h2v2zm0-4h-2V7h2v5z" />
               </svg>
@@ -353,12 +434,12 @@ function openZaloAuthPopup() {
             <div>
               <h3 className="text-sm font-semibold text-zinc-100 flex items-center gap-1.5">
                 Xác thực &amp; Đăng nhập qua Zalo
-                <span className="rounded bg-blue-500/15 border border-blue-500/30 px-1.5 py-0.2 text-[10px] font-medium text-blue-400">
-                  Zalo Auth
+                <span className="rounded-full bg-blue-500/20 border border-blue-400/40 px-2 py-0.5 text-[10px] font-semibold text-blue-300">
+                  Realtime QR Gateway
                 </span>
               </h3>
               <p className="text-[11px] text-zinc-400">
-                Tuân thủ mục 2 &quot;Cách viết API ở ứng dụng đích để tiếp nhận&quot; trong Zalo_guide.md
+                Quét mã QR bằng ứng dụng Zalo trên điện thoại để cấp quyền truy cập hệ thống AI_OPC.
               </p>
             </div>
           </div>
@@ -376,38 +457,40 @@ function openZaloAuthPopup() {
         <div className="flex items-center border-b border-border/60 bg-zinc-950/60 px-5 text-xs font-medium">
           <button
             type="button"
-            onClick={() => setActiveTab("popup")}
-            className={`flex items-center gap-1.5 border-b-2 py-2.5 px-3 transition-colors cursor-pointer ${
-              activeTab === "popup"
+            onClick={() => {
+              setActiveTab("popup");
+              if (qrStep === "idle" || qrStep === "error") {
+                startLiveQrSession();
+              }
+            }}
+            className={`flex items-center gap-1.5 border-b-2 py-2.5 px-3 transition-colors cursor-pointer ${activeTab === "popup"
                 ? "border-blue-500 text-blue-400 font-semibold"
                 : "border-transparent text-zinc-400 hover:text-zinc-200"
-            }`}
+              }`}
           >
             <QrCode className="h-3.5 w-3.5" />
-            <span>Popup Quét Mã (Khuyên dùng)</span>
+            <span>Quét Mã Trực Tiếp (In-App)</span>
           </button>
 
           <button
             type="button"
             onClick={() => setActiveTab("apiGuide")}
-            className={`flex items-center gap-1.5 border-b-2 py-2.5 px-3 transition-colors cursor-pointer ${
-              activeTab === "apiGuide"
+            className={`flex items-center gap-1.5 border-b-2 py-2.5 px-3 transition-colors cursor-pointer ${activeTab === "apiGuide"
                 ? "border-blue-500 text-blue-400 font-semibold"
                 : "border-transparent text-zinc-400 hover:text-zinc-200"
-            }`}
+              }`}
           >
             <Code2 className="h-3.5 w-3.5" />
-            <span>Hướng dẫn &amp; Code API Tiếp nhận</span>
+            <span>Hướng dẫn API &amp; Webhook</span>
           </button>
 
           <button
             type="button"
             onClick={() => setActiveTab("manual")}
-            className={`flex items-center gap-1.5 border-b-2 py-2.5 px-3 transition-colors cursor-pointer ${
-              activeTab === "manual"
+            className={`flex items-center gap-1.5 border-b-2 py-2.5 px-3 transition-colors cursor-pointer ${activeTab === "manual"
                 ? "border-blue-500 text-blue-400 font-semibold"
                 : "border-transparent text-zinc-400 hover:text-zinc-200"
-            }`}
+              }`}
           >
             <Terminal className="h-3.5 w-3.5" />
             <span>Test Payload JSON</span>
@@ -418,98 +501,152 @@ function openZaloAuthPopup() {
         <div className="p-5 overflow-y-auto space-y-4">
           {activeTab === "popup" ? (
             <div className="space-y-4">
-              {/* Status Banner */}
-              {pollingStatus === "success" ? (
-                <div className="rounded-xl border border-emerald-500/40 bg-emerald-950/30 p-4 text-emerald-300 animate-in zoom-in-95 duration-200">
-                  <div className="flex items-center gap-2 font-semibold">
-                    <ShieldCheck className="h-5 w-5 text-emerald-400" />
+              {/* Success Banner */}
+              {qrStep === "logged_in" ? (
+                <div className="rounded-xl border border-emerald-500/40 bg-emerald-950/40 p-4 text-emerald-300 animate-in zoom-in-95 duration-200 text-center space-y-2">
+                  <div className="flex items-center justify-center gap-2 font-semibold text-emerald-400 text-sm">
+                    <ShieldCheck className="h-6 w-6" />
                     <span>Xác thực Zalo thành công!</span>
                   </div>
-                  <p className="mt-1 text-xs text-emerald-400/90 leading-relaxed">
-                    Đã nhận phiên từ UID <strong>{detectedUid}</strong>. Đang tự động chuyển hướng vào Founder Cockpit...
+                  <p className="text-xs text-emerald-300/90 leading-relaxed">
+                    Đã nhận phiên từ UID <strong>{detectedUid}</strong>. Đang thiết lập phiên làm việc và chuyển hướng...
                   </p>
+                  <div className="flex items-center justify-center gap-2 pt-1 text-xs text-emerald-400">
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                    <span>Đang hoàn tất đăng nhập...</span>
+                  </div>
                 </div>
               ) : (
-                <div className="flex items-center gap-3 rounded-xl border border-blue-500/30 bg-blue-950/20 p-3.5">
-                  <div className="relative flex h-9 w-9 items-center justify-center rounded-lg bg-blue-500/20 text-blue-400 shrink-0">
-                    <span className="absolute h-full w-full animate-ping rounded-lg bg-blue-400/20" />
-                    <Loader2 className="h-5 w-5 animate-spin text-blue-400" />
-                  </div>
-                  <div className="space-y-0.5 min-w-0">
-                    <div className="flex items-center gap-2">
-                      <p className="text-xs font-semibold text-blue-300">
-                        Đang lắng nghe tín hiệu quét mã QR từ Zalo...
-                      </p>
-                      <span className="inline-flex items-center gap-1 rounded-full bg-emerald-500/15 border border-emerald-500/30 px-2 py-0.2 text-[10px] text-emerald-400">
-                        <Radio className="h-2.5 w-2.5 animate-pulse" /> Live Polling
+                /* Interactive QR Scanner Card */
+                <div className="flex flex-col items-center justify-center rounded-2xl border border-blue-500/30 bg-gradient-to-b from-blue-950/25 via-zinc-950/80 to-zinc-950/90 p-5 shadow-inner space-y-4">
+
+                  {/* Status Indicator */}
+                  <div className="flex items-center gap-2 text-xs">
+                    {qrStep === "scanned" ? (
+                      <span className="inline-flex items-center gap-1.5 rounded-full bg-blue-500/20 border border-blue-500/40 px-3 py-1 text-xs font-medium text-blue-300 animate-pulse">
+                        <Smartphone className="h-3.5 w-3.5 text-blue-400" />
+                        Đã quét mã! Xác nhận trên điện thoại...
                       </span>
-                    </div>
-                    <p className="text-[11px] text-zinc-400">
-                      Cửa sổ Popup xác thực đang mở. Quét mã QR bằng ứng dụng Zalo trên điện thoại.
-                    </p>
+                    ) : qrStep === "waiting_scan" ? (
+                      <span className="inline-flex items-center gap-1.5 rounded-full bg-emerald-500/15 border border-emerald-500/30 px-3 py-1 text-xs font-medium text-emerald-400">
+                        <Radio className="h-3 w-3 animate-pulse text-emerald-400" />
+                        Mã QR sẵn sàng • Đang chờ quét
+                      </span>
+                    ) : qrStep === "qr_expired" ? (
+                      <span className="inline-flex items-center gap-1.5 rounded-full bg-amber-500/20 border border-amber-500/40 px-3 py-1 text-xs font-medium text-amber-300">
+                        <AlertCircle className="h-3.5 w-3.5 text-amber-400" />
+                        Mã QR đã hết hạn
+                      </span>
+                    ) : (
+                      <span className="inline-flex items-center gap-1.5 rounded-full bg-blue-500/15 border border-blue-500/30 px-3 py-1 text-xs font-medium text-blue-300">
+                        <Loader2 className="h-3 w-3 animate-spin text-blue-400" />
+                        Đang kết nối Zalo Gateway...
+                      </span>
+                    )}
                   </div>
+
+                  {/* QR Image Container */}
+                  <div className="relative flex items-center justify-center p-3 rounded-2xl bg-white shadow-2xl shadow-blue-500/10 min-h-[220px] min-w-[220px] border-4 border-zinc-800">
+                    {qrImage && qrStep !== "qr_expired" && qrStep !== "init" ? (
+                      <div className="relative group">
+                        <img
+                          src={qrImage}
+                          alt="Mã QR Zalo"
+                          className="h-48 w-48 rounded-lg object-contain"
+                        />
+                        {/* Radar scanning line effect */}
+                        {qrStep === "waiting_scan" && (
+                          <div className="absolute inset-0 overflow-hidden pointer-events-none rounded-lg">
+                            <div className="w-full h-1 bg-gradient-to-r from-transparent via-blue-500 to-transparent shadow-lg shadow-blue-400 animate-bounce opacity-80" />
+                          </div>
+                        )}
+                        {/* Scanned Overlay */}
+                        {qrStep === "scanned" && (
+                          <div className="absolute inset-0 bg-blue-950/85 backdrop-blur-xs rounded-lg flex flex-col items-center justify-center p-3 text-center text-white space-y-2 animate-in fade-in duration-150">
+                            <Smartphone className="h-8 w-8 text-blue-400 animate-bounce" />
+                            <p className="text-xs font-semibold text-blue-200">Đã nhận diện thiết bị!</p>
+                            <p className="text-[10px] text-zinc-300">Vui lòng bấm &quot;Xác nhận đăng nhập&quot; trên điện thoại của bạn.</p>
+                          </div>
+                        )}
+                      </div>
+                    ) : qrStep === "qr_expired" ? (
+                      <div className="flex flex-col items-center justify-center h-48 w-48 text-zinc-800 space-y-2 p-2 text-center">
+                        <AlertCircle className="h-10 w-10 text-amber-500" />
+                        <p className="text-xs font-semibold text-zinc-700">Mã QR đã hết hạn</p>
+                        <button
+                          type="button"
+                          onClick={startLiveQrSession}
+                          className="mt-1 flex items-center gap-1 rounded-lg bg-[#0068FF] px-3 py-1.5 text-[11px] font-semibold text-white shadow hover:bg-blue-600 transition-colors cursor-pointer"
+                        >
+                          <RefreshCw className="h-3 w-3" />
+                          <span>Tạo mã mới</span>
+                        </button>
+                      </div>
+                    ) : (
+                      <div className="flex flex-col items-center justify-center h-48 w-48 text-zinc-600 space-y-2">
+                        <Loader2 className="h-8 w-8 animate-spin text-[#0068FF]" />
+                        <p className="text-[11px] font-medium text-zinc-500">Đang tạo mã QR...</p>
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Status text instruction */}
+                  <p className="text-xs text-zinc-300 text-center max-w-sm leading-relaxed font-medium">
+                    {qrStatusText}
+                  </p>
+
+                  {/* Action Buttons */}
+                  <div className="flex items-center gap-2 pt-1 w-full max-w-sm">
+                    <button
+                      type="button"
+                      onClick={startLiveQrSession}
+                      className="flex-1 flex items-center justify-center gap-1.5 rounded-xl border border-zinc-700 bg-zinc-800/80 hover:bg-zinc-700/80 py-2.5 px-3 text-xs font-medium text-zinc-200 transition-colors cursor-pointer"
+                    >
+                      <RefreshCw className="h-3.5 w-3.5 text-zinc-400" />
+                      <span>Làm mới mã QR</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={handleManualOpenPopup}
+                      className="flex-1 flex items-center justify-center gap-1.5 rounded-xl bg-blue-600/20 border border-blue-500/40 hover:bg-blue-600/30 py-2.5 px-3 text-xs font-semibold text-blue-300 transition-colors cursor-pointer"
+                    >
+                      <ExternalLink className="h-3.5 w-3.5" />
+                      <span>Mở Popup riêng</span>
+                    </button>
+                  </div>
+
+                  {errorMessage && (
+                    <div className="flex items-center gap-2 rounded-xl border border-rose-500/30 bg-rose-500/10 p-3 text-xs text-rose-300 w-full">
+                      <AlertCircle className="h-4 w-4 shrink-0 text-rose-400" />
+                      <span>{errorMessage}</span>
+                    </div>
+                  )}
                 </div>
               )}
-
-              {/* Main Popup Action Card */}
-              <div className="rounded-xl border border-zinc-700/60 bg-zinc-950/60 p-4 space-y-3">
-                <div className="space-y-1">
-                  <h4 className="text-xs font-semibold text-zinc-200 flex items-center gap-1.5">
-                    <Smartphone className="h-4 w-4 text-blue-400" />
-                    Quy trình 3 bước xác thực theo Zalo_guide.md:
-                  </h4>
-                  <ul className="text-[11px] text-zinc-400 space-y-1.5 pl-5 list-decimal leading-relaxed">
-                    <li>
-                      Bấm nút bên dưới để mở cửa sổ <strong>Zalo Auth Popup (540x720)</strong> căn giữa màn hình.
-                    </li>
-                    <li>
-                      Mở app Zalo trên điện thoại $\rightarrow$ Chọn biểu tượng <strong>Quét mã QR</strong>.
-                    </li>
-                    <li>
-                      Bấm <strong>Xác nhận</strong> trên điện thoại. Hệ thống tự động nhận Webhook và đăng nhập tức thì!
-                    </li>
-                  </ul>
-                </div>
-
-                <div className="pt-2">
-                  <button
-                    type="button"
-                    onClick={handleManualOpenPopup}
-                    className="w-full flex items-center justify-center gap-2.5 rounded-xl bg-[#0068FF] hover:bg-[#0057d6] py-3 px-4 text-xs font-semibold text-white shadow-lg shadow-blue-500/25 transition-all cursor-pointer hover:scale-[1.01]"
-                  >
-                    <ExternalLink className="h-4 w-4" />
-                    <span>Mở Cửa Sổ Xác Thực Zalo (Popup 540x720)</span>
-                  </button>
-                </div>
-              </div>
 
               {/* Endpoint Status Card */}
               <div className="rounded-xl border border-border/60 bg-zinc-950/40 p-3 flex items-center justify-between text-xs">
                 <div className="flex items-center gap-2 text-zinc-400">
-                  <Globe className="h-4 w-4 text-zinc-500" />
-                  <span>Cổng Zalo Auth: <strong className="text-zinc-200 font-mono">http://localhost:3001</strong></span>
+                  <Globe className="h-4 w-4 text-blue-400" />
+                  <span>Cổng Zalo Auth: <strong className="text-zinc-200 font-mono">Self-Hosted Portal (/zalo-portal)</strong></span>
                 </div>
                 <div className="flex items-center gap-2 text-zinc-400">
                   <CheckCircle2 className="h-4 w-4 text-emerald-400" />
-                  <span>Webhook API: <strong className="text-zinc-200 font-mono">/api/zalo/webhook</strong></span>
+                  <span>Trạng thái: <strong className="text-emerald-400 font-mono">Tích hợp sẵn</strong></span>
                 </div>
               </div>
-
-              {/* Help tip */}
-              <p className="text-[11px] text-zinc-500 text-center leading-relaxed">
-                Nếu trình duyệt đang chặn cửa sổ bật lên (Popup Blocker), hãy chọn <strong>Cho phép popup</strong> cho trang này và bấm lại nút trên.
-              </p>
             </div>
           ) : activeTab === "apiGuide" ? (
-            /* Tab 2: Hướng dẫn & Code API Tiếp Nhận theo Zalo_guide.md */
+            /* Tab 2: Hướng dẫn & Code API Tiếp Nhận */
             <div className="space-y-4">
               <div className="rounded-xl border border-blue-500/20 bg-blue-950/15 p-3.5 text-xs text-zinc-300 space-y-1.5">
                 <p className="font-semibold text-blue-300 flex items-center gap-1.5">
                   <Code2 className="h-4 w-4 text-blue-400" />
-                  Mục 2: Cách viết API ở ứng dụng đích để tiếp nhận
+                  Tích hợp Webhook tiếp nhận phiên Zalo
                 </p>
                 <p className="text-[11px] text-zinc-400 leading-relaxed">
-                  Zalo Auth Portal gửi HTTP POST webhook chứa cookie và imei tới địa chỉ URL bạn cấu hình. Cả Backend Express và Next.js App Router đều đã được thiết lập sẵn sàng:
+                  Zalo Auth Bridge phát dữ liệu phiên làm việc (cookie, imei, secretKey) tự động sang Webhook backend và đồng thời lưu trữ bền vững tại <code>data/zalo_session.json</code>.
                 </p>
               </div>
 
@@ -517,7 +654,7 @@ function openZaloAuthPopup() {
               <div className="space-y-2.5">
                 <div className="space-y-1">
                   <label className="text-[11px] font-semibold text-zinc-300 flex items-center justify-between">
-                    <span>URL Webhook tiếp nhận (Khuyên dùng trong targetUrl):</span>
+                    <span>URL Webhook tiếp nhận:</span>
                     <span className="text-[10px] text-emerald-400 font-normal">200 OK • Đang hoạt động</span>
                   </label>
                   <div className="flex items-center gap-1.5">
@@ -548,9 +685,9 @@ function openZaloAuthPopup() {
                 </div>
 
                 <div className="rounded-lg bg-zinc-950/60 border border-zinc-800 p-2.5 text-[11px] text-zinc-400 space-y-1">
-                  <p className="text-zinc-300 font-medium">💡 Tham số truyền vào Popup:</p>
+                  <p className="text-zinc-300 font-medium">💡 Tham số truyền vào Popup Portal:</p>
                   <code className="text-[10px] text-blue-300 font-mono block break-all">
-                    http://localhost:3001/?targetUrl={encodeURIComponent(webhookUrl)}&amp;autoStart=true
+                    /zalo-portal?targetUrl={encodeURIComponent(webhookUrl)}&amp;autoStart=true
                   </code>
                 </div>
               </div>
@@ -562,33 +699,30 @@ function openZaloAuthPopup() {
                     <button
                       type="button"
                       onClick={() => setCodeLang("nextjs")}
-                      className={`px-2.5 py-1 text-[11px] rounded font-medium transition-colors cursor-pointer ${
-                        codeLang === "nextjs"
+                      className={`px-2.5 py-1 text-[11px] rounded font-medium transition-colors cursor-pointer ${codeLang === "nextjs"
                           ? "bg-blue-600 text-white"
                           : "text-zinc-400 hover:text-zinc-200"
-                      }`}
+                        }`}
                     >
                       Next.js App Router
                     </button>
                     <button
                       type="button"
                       onClick={() => setCodeLang("express")}
-                      className={`px-2.5 py-1 text-[11px] rounded font-medium transition-colors cursor-pointer ${
-                        codeLang === "express"
+                      className={`px-2.5 py-1 text-[11px] rounded font-medium transition-colors cursor-pointer ${codeLang === "express"
                           ? "bg-blue-600 text-white"
                           : "text-zinc-400 hover:text-zinc-200"
-                      }`}
+                        }`}
                     >
                       Node.js / Express
                     </button>
                     <button
                       type="button"
                       onClick={() => setCodeLang("popupJs")}
-                      className={`px-2.5 py-1 text-[11px] rounded font-medium transition-colors cursor-pointer ${
-                        codeLang === "popupJs"
+                      className={`px-2.5 py-1 text-[11px] rounded font-medium transition-colors cursor-pointer ${codeLang === "popupJs"
                           ? "bg-blue-600 text-white"
                           : "text-zinc-400 hover:text-zinc-200"
-                      }`}
+                        }`}
                     >
                       Client Popup JS
                     </button>
@@ -597,61 +731,42 @@ function openZaloAuthPopup() {
                   <button
                     type="button"
                     onClick={() => copyToClipboard(codeSnippets[codeLang], "snippet")}
-                    className="text-[11px] text-blue-400 hover:underline flex items-center gap-1 cursor-pointer"
+                    className="inline-flex items-center gap-1 text-[11px] text-zinc-400 hover:text-zinc-200 cursor-pointer"
                   >
                     {copiedKey === "snippet" ? (
                       <>
-                        <Check className="h-3.5 w-3.5 text-emerald-400" />
+                        <Check className="h-3 w-3 text-emerald-400" />
                         <span className="text-emerald-400">Đã chép code</span>
                       </>
                     ) : (
                       <>
-                        <Copy className="h-3.5 w-3.5" />
-                        <span>Sao chép code</span>
+                        <Copy className="h-3 w-3" />
+                        <span>Chép code mẫu</span>
                       </>
                     )}
                   </button>
                 </div>
 
-                <pre className="rounded-xl border border-zinc-800 bg-zinc-950 p-3 text-[11px] font-mono text-zinc-300 overflow-x-auto max-h-48 leading-relaxed">
+                <pre className="p-3.5 rounded-xl bg-zinc-950 border border-border/70 text-[11px] font-mono text-zinc-300 overflow-x-auto max-h-52 leading-relaxed">
                   {codeSnippets[codeLang]}
                 </pre>
               </div>
-
-              {/* Direct Open Portal Button */}
-              <a
-                href={`${zaloPortalUrl}/?targetUrl=${encodeURIComponent(webhookUrl)}&autoStart=true`}
-                target="_blank"
-                rel="noreferrer"
-                className="flex w-full items-center justify-center gap-2 rounded-xl bg-white/10 hover:bg-white/15 text-zinc-200 py-2.5 px-4 text-xs font-semibold transition-all cursor-pointer border border-zinc-700"
-              >
-                <ExternalLink className="h-4 w-4 text-blue-400" />
-                <span>Mở Zalo Auth Portal trực tiếp trong Tab mới</span>
-              </a>
             </div>
           ) : (
-            /* Tab 3: Manual JSON */
+            /* Tab 3: Test Payload JSON Thủ Công */
             <div className="space-y-3">
-              <div className="flex items-center justify-between">
-                <label className="text-xs font-medium text-zinc-300">
-                  Dán Payload Webhook từ Zalo Auth:
-                </label>
-                <button
-                  type="button"
-                  onClick={() => setManualJson(JSON.stringify(SAMPLE_PAYLOAD, null, 2))}
-                  className="text-[11px] text-blue-400 hover:underline flex items-center gap-1 cursor-pointer"
-                >
-                  <Sparkles className="h-3 w-3" />
-                  <span>Tải mẫu test chuẩn</span>
-                </button>
+              <div className="rounded-xl border border-border/80 bg-zinc-950 p-3 text-xs text-zinc-300 space-y-1">
+                <p className="font-semibold text-zinc-200">🛠️ Kiểm thử trực tiếp với JSON Payload:</p>
+                <p className="text-[11px] text-zinc-400">
+                  Dán payload chứa <code>uid</code>, <code>imei</code> và <code>cookie</code> để mô phỏng sự kiện xác thực từ Zalo Gateway.
+                </p>
               </div>
 
               <textarea
                 rows={9}
                 value={manualJson}
                 onChange={(e) => setManualJson(e.target.value)}
-                className="w-full rounded-xl border border-border/80 bg-zinc-950 p-3 text-xs font-mono text-zinc-200 outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500 leading-relaxed"
-                placeholder="Dán JSON payload chứa ZALO_AUTH_SUCCESS..."
+                className="w-full rounded-xl border border-border/80 bg-zinc-950 p-3 text-xs font-mono text-zinc-200 outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500 leading-relaxed select-all"
               />
 
               {manualError && (
@@ -665,38 +780,17 @@ function openZaloAuthPopup() {
                 type="button"
                 onClick={handleManualLogin}
                 disabled={manualLoading}
-                className="w-full flex items-center justify-center gap-2 rounded-xl bg-[#0068FF] hover:bg-[#0057d6] py-2.5 px-4 text-xs font-semibold text-white transition-all disabled:opacity-50 cursor-pointer shadow-md"
+                className="w-full flex items-center justify-center gap-2 rounded-xl bg-[#0068FF] hover:bg-blue-600 py-2.5 px-4 text-xs font-semibold text-white shadow-md transition-all cursor-pointer disabled:opacity-50"
               >
                 {manualLoading ? (
-                  <>
-                    <Loader2 className="h-4 w-4 animate-spin" />
-                    <span>Đang kích hoạt phiên...</span>
-                  </>
+                  <Loader2 className="h-4 w-4 animate-spin" />
                 ) : (
-                  <>
-                    <Check className="h-4 w-4" />
-                    <span>Xác nhận &amp; Đăng nhập ngay</span>
-                  </>
+                  <Terminal className="h-4 w-4" />
                 )}
+                <span>Kích hoạt phiên thủ công</span>
               </button>
             </div>
           )}
-        </div>
-
-        {/* Modal Footer */}
-        <div className="flex items-center justify-between px-5 py-3 border-t border-border/60 bg-zinc-950/60 text-[11px] text-zinc-500">
-          <span>
-            {existingStatus?.connected
-              ? `Phiên Zalo hiện tại: UID ${existingStatus.uid} (Đang kết nối)`
-              : "Khóa phiên Zalo được mã hóa & lưu an toàn cho AI Agents"}
-          </span>
-          <button
-            type="button"
-            onClick={onClose}
-            className="hover:text-zinc-300 transition-colors cursor-pointer"
-          >
-            Đóng
-          </button>
         </div>
       </div>
     </div>

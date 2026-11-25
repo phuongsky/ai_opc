@@ -16,12 +16,20 @@ import { db } from "../../db/client";
 import { env } from "../../config/env";
 import { issueSessionToken } from "./authService";
 import { logAudit } from "../audit/auditLogger";
+import { getAuthChannelsConfig } from "./authChannelsConfig";
 
 let cachedOAuthClient: OAuth2Client | null = null;
+let cachedClientId: string | null = null;
 
-function getOAuthClient(): OAuth2Client {
-  if (!cachedOAuthClient) {
-    cachedOAuthClient = new OAuth2Client(env.googleClientId || undefined);
+export function resetCachedOAuthClient(): void {
+  cachedOAuthClient = null;
+  cachedClientId = null;
+}
+
+function getOAuthClient(clientId?: string): OAuth2Client {
+  if (!cachedOAuthClient || cachedClientId !== (clientId || "")) {
+    cachedOAuthClient = new OAuth2Client(clientId || undefined);
+    cachedClientId = clientId || "";
   }
   return cachedOAuthClient;
 }
@@ -41,14 +49,23 @@ export async function verifyGoogleIdTokenAndLogin(idToken: string): Promise<Goog
     throw new Error("Thiếu Google ID Token hợp lệ.");
   }
 
-  const client = getOAuthClient();
-  const audience = env.googleClientId ? env.googleClientId : undefined;
+  const authConfig = getAuthChannelsConfig();
+  if (!authConfig.googleLoginEnabled) {
+    throw new Error("Tính năng đăng nhập bằng Google hiện đang bị tắt trong Cài đặt hệ thống.");
+  }
+
+  const effectiveClientId = authConfig.googleClientId || env.googleClientId;
+  if (!effectiveClientId) {
+    throw new Error("Chưa cấu hình Google Client ID trong hệ thống hoặc file .env.");
+  }
+
+  const client = getOAuthClient(effectiveClientId);
 
   let ticket;
   try {
     ticket = await client.verifyIdToken({
       idToken,
-      audience,
+      audience: effectiveClientId,
     });
   } catch (err) {
     throw new Error(`Xác thực Google ID Token thất bại: ${err instanceof Error ? err.message : String(err)}`);

@@ -34,10 +34,21 @@ const VALID_RISK: RiskLevel[] = ["R0", "R1", "R2", "R3", "R4"];
 // ---- Prompt builders ---------------------------------------------------
 
 function buildSystemPrompt(): string {
+  const now = new Date();
+  const yyyy = now.getFullYear();
+  const mm = String(now.getMonth() + 1).padStart(2, "0");
+  const dd = String(now.getDate()).padStart(2, "0");
+  const dateVn = `${dd}/${mm}/${yyyy}`;
+  const dateIso = `${yyyy}-${mm}-${dd}`;
+  const timeVn = now.toLocaleTimeString("vi-VN", { hour12: false });
+
   return [
     "Bạn là AI-COO (Chief Operating Officer) của một công ty vận hành theo mô hình",
     "'One-Person Company' — Founder là người duy nhất ra quyết định, mọi việc thực thi",
     "do đội ngũ AI Agent phụ trách.",
+    "",
+    `[THỜI GIAN HIỆN TẠI CỦA HỆ THỐNG]: Ngày ${dateVn} (${dateIso}), Giờ: ${timeVn}.`,
+    `Khi Founder đề cập "hôm nay", "tháng này", "tuần này", BẮT BUỘC căn cứ theo mốc thời gian thực tế này (${dateVn}).`,
     "",
     "Nhiệm vụ: nhận 1 GOAL từ Founder, phân rã thành 3–6 sub-task cụ thể và khả thi,",
     "mỗi sub-task giao cho ĐÚNG 1 Department Agent phù hợp nhất trong danh sách cung cấp.",
@@ -278,6 +289,12 @@ export async function runOrchestratorForGoal(
   const drafts = await decomposeGoal(goalText);
   const created: Task[] = [];
 
+  const parentTask = await db.task.findUnique({
+    where: { id: goalTaskId },
+    select: { createdBy: true },
+  });
+  const inheritedCreatedBy = parentTask?.createdBy || "ai_coo";
+
   for (const draft of drafts) {
     const task = await db.task.create({
       data: {
@@ -288,7 +305,7 @@ export async function runOrchestratorForGoal(
         assignedTo: draft.assignedTo,
         status: "ASSIGNED",
         riskLevel: draft.riskLevel,
-        createdBy: "ai_coo",
+        createdBy: inheritedCreatedBy,
       },
     });
     created.push(task as unknown as Task);

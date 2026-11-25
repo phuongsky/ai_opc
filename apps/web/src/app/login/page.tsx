@@ -51,6 +51,8 @@ export default function LoginPage() {
   const [googleLoading, setGoogleLoading] = useState(false);
   const [error, setError] = useState("");
   const [googleClientId, setGoogleClientId] = useState<string>("");
+  const [googleLoginEnabled, setGoogleLoginEnabled] = useState(true);
+  const [zaloLoginEnabled, setZaloLoginEnabled] = useState(true);
   const [scriptLoaded, setScriptLoaded] = useState(false);
   const [showConfigHelp, setShowConfigHelp] = useState(false);
   const [isZaloModalOpen, setIsZaloModalOpen] = useState(false);
@@ -128,14 +130,22 @@ export default function LoginPage() {
   useEffect(() => {
     async function loadConfig() {
       try {
-        const envClientId = process.env.NEXT_PUBLIC_GOOGLE_CLIENT_ID;
-        if (envClientId) {
-          setGoogleClientId(envClientId);
-          return;
-        }
-        const cfg = await fetchAuthConfig().catch(() => ({ googleClientId: "", googleConfigured: false }));
-        if (cfg.googleClientId) {
-          setGoogleClientId(cfg.googleClientId);
+        const cfg = await fetchAuthConfig().catch(() => ({
+          googleLoginEnabled: true,
+          googleClientId: "",
+          googleConfigured: false,
+          zaloLoginEnabled: true,
+        }));
+        setGoogleLoginEnabled(cfg.googleLoginEnabled);
+        setZaloLoginEnabled(cfg.zaloLoginEnabled !== undefined ? cfg.zaloLoginEnabled : true);
+        if (cfg.googleLoginEnabled) {
+          if (cfg.googleClientId) {
+            setGoogleClientId(cfg.googleClientId);
+          } else if (process.env.NEXT_PUBLIC_GOOGLE_CLIENT_ID) {
+            setGoogleClientId(process.env.NEXT_PUBLIC_GOOGLE_CLIENT_ID);
+          }
+        } else {
+          setGoogleClientId("");
         }
       } catch {
         // Ignore config fetch error
@@ -258,109 +268,99 @@ export default function LoginPage() {
           <div className="rounded-2xl border border-border/80 bg-panel/95 p-6 sm:p-7 shadow-2xl backdrop-blur-md">
             {!pendingToken ? (
               <div className="space-y-5">
-                {/* Google Sign-In Integration */}
-                <div className="space-y-2.5">
-                  {googleLoading ? (
-                    <div className="flex h-11 w-full items-center justify-center gap-2 rounded-full border border-border/80 bg-zinc-900 text-xs font-medium text-zinc-300">
-                      <Loader2 className="h-4 w-4 animate-spin text-accent" />
-                      <span>{t.auth.signingIn}</span>
-                    </div>
-                  ) : googleClientId ? (
-                    <div className="flex justify-center min-h-[44px]">
-                      <div ref={googleButtonRef} className="w-full flex justify-center" />
-                    </div>
-                  ) : (
-                    /* Fallback when Google Client ID not yet set */
-                    <div>
-                      <button
-                        type="button"
-                        onClick={() => setShowConfigHelp((v) => !v)}
-                        className="flex h-11 w-full items-center justify-center gap-3 rounded-full border border-border/80 bg-white/5 px-4 text-xs font-medium text-zinc-200 transition-all hover:bg-white/10 hover:border-zinc-500 cursor-pointer shadow-sm"
-                      >
-                        <svg className="h-4 w-4" viewBox="0 0 24 24">
-                          <path
-                            fill="#4285F4"
-                            d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"
-                          />
-                          <path
-                            fill="#34A853"
-                            d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"
-                          />
-                          <path
-                            fill="#FBBC05"
-                            d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.06H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.94l2.85-2.22.81-.63z"
-                          />
-                          <path
-                            fill="#EA4335"
-                            d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.06l3.66 2.84c.87-2.6 3.3-4.52 6.16-4.52z"
-                          />
-                        </svg>
-                        <span>{t.auth.googleSignIn}</span>
-                      </button>
+                {(googleLoginEnabled || zaloLoginEnabled) && (
+                  <div className="space-y-2.5">
+                    {/* Google Sign-In Integration */}
+                    {googleLoginEnabled && (
+                      googleLoading ? (
+                      <div className="flex h-11 w-full items-center justify-center gap-2 rounded-full border border-border/80 bg-zinc-900 text-xs font-medium text-zinc-300">
+                        <Loader2 className="h-4 w-4 animate-spin text-accent" />
+                        <span>{t.auth.signingIn}</span>
+                      </div>
+                    ) : googleClientId ? (
+                      <div className="flex justify-center min-h-[44px]">
+                        <div ref={googleButtonRef} className="w-full flex justify-center" />
+                      </div>
+                    ) : (
+                      /* Fallback when Google Client ID not yet set */
+                      <div>
+                        <button
+                          type="button"
+                          onClick={() => setShowConfigHelp((v) => !v)}
+                          className="flex h-11 w-full items-center justify-center gap-3 rounded-full border border-border/80 bg-white/5 px-4 text-xs font-medium text-zinc-200 transition-all hover:bg-white/10 hover:border-zinc-500 cursor-pointer shadow-sm"
+                        >
+                          <svg className="h-4 w-4" viewBox="0 0 24 24">
+                            <path
+                              fill="#4285F4"
+                              d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"
+                            />
+                            <path
+                              fill="#34A853"
+                              d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"
+                            />
+                            <path
+                              fill="#FBBC05"
+                              d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.06H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.94l2.85-2.22.81-.63z"
+                            />
+                            <path
+                              fill="#EA4335"
+                              d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.06l3.66 2.84c.87-2.6 3.3-4.52 6.16-4.52z"
+                            />
+                          </svg>
+                          <span>{t.auth.googleSignIn}</span>
+                        </button>
 
-                      {showConfigHelp && (
-                        <div className="mt-2 rounded-xl border border-border/80 bg-zinc-950 p-3 text-[11px] text-zinc-400 space-y-1 leading-relaxed">
-                          <p className="font-semibold text-zinc-200">ℹ️ Google Sign-In:</p>
-                          <p>
-                            Configure <code>GOOGLE_CLIENT_ID</code> in <code>services/api/.env</code> or <code>NEXT_PUBLIC_GOOGLE_CLIENT_ID</code> in <code>apps/web/.env.local</code>.
-                          </p>
-                        </div>
-                      )}
-                    </div>
-                  )}
-
-                  {/* Zalo Sign-In Integration */}
-                  <div className="space-y-1.5">
-                    <button
-                      type="button"
-                      onClick={() => {
-                        checkZaloAuthSession().then((res) => {
-                          if (res.authenticated && res.token) {
-                            setToken(res.token);
-                            window.location.href = "/";
-                            return;
-                          }
-                        });
-
-                        setZaloWaiting(true);
-                        popupRef.current = openZaloAuthPopup({
-                          onAuthSuccess: () => {
-                            verifyAndRedirect(20);
-                          },
-                        });
-                      }}
-                      className="flex h-11 w-full items-center justify-between rounded-full border border-blue-500/40 bg-gradient-to-r from-[#0068FF]/20 via-[#0068FF]/15 to-[#0068FF]/25 hover:from-[#0068FF]/30 hover:to-[#0068FF]/35 px-4 text-xs font-semibold text-blue-200 hover:text-white transition-all cursor-pointer shadow-sm hover:shadow-blue-500/25 hover:border-blue-400/70 group"
-                    >
-                      <div className="flex items-center gap-2.5">
-                        {zaloWaiting ? (
-                          <Loader2 className="h-4 w-4 animate-spin text-blue-400 shrink-0" />
-                        ) : (
-                          <div className="flex h-6 w-6 items-center justify-center rounded-full bg-[#0068FF] text-white shadow group-hover:scale-105 transition-transform shrink-0">
-                            <svg className="h-3.5 w-3.5 fill-current" viewBox="0 0 24 24">
-                              <path d="M12 2C6.48 2 2 6.48 2 12c0 1.85.5 3.58 1.38 5.08L2 22l5.12-1.35C8.55 21.49 10.23 22 12 22c5.52 0 10-4.48 10-10S17.52 2 12 2zm1 14h-2v-2h2v2zm0-4h-2V7h2v5z"/>
-                            </svg>
+                        {showConfigHelp && (
+                          <div className="mt-2 rounded-xl border border-border/80 bg-zinc-950 p-3 text-[11px] text-zinc-400 space-y-1 leading-relaxed">
+                            <p className="font-semibold text-zinc-200">ℹ️ Google Sign-In:</p>
+                            <p>
+                              Configure <code>GOOGLE_CLIENT_ID</code> in <code>services/api/.env</code> or <code>NEXT_PUBLIC_GOOGLE_CLIENT_ID</code> in <code>apps/web/.env.local</code>.
+                            </p>
                           </div>
                         )}
-                        <span className="font-medium">
-                          {zaloStatusText || (zaloWaiting ? (locale === "vi" ? "Đang chờ quét mã trên Popup..." : "Waiting for QR scan...") : t.auth.zaloSignIn)}
-                        </span>
                       </div>
-                      <span className="rounded-full bg-blue-500/25 border border-blue-400/30 px-2 py-0.5 text-[10px] font-semibold text-blue-300">
-                        Popup QR
-                      </span>
-                    </button>
+                    ))}
+
+                    {/* Zalo Sign-In Integration */}
+                    {zaloLoginEnabled && (
+                      <div className="space-y-1.5">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setIsZaloModalOpen(true);
+                          }}
+                          className="flex h-11 w-full items-center justify-between rounded-full border border-blue-500/40 bg-gradient-to-r from-[#0068FF]/20 via-[#0068FF]/15 to-[#0068FF]/25 hover:from-[#0068FF]/30 hover:to-[#0068FF]/35 px-4 text-xs font-semibold text-blue-200 hover:text-white transition-all cursor-pointer shadow-sm hover:shadow-blue-500/25 hover:border-blue-400/70 group"
+                        >
+                          <div className="flex items-center gap-2.5">
+                            <div className="flex h-6 w-6 items-center justify-center rounded-full bg-[#0068FF] text-white shadow group-hover:scale-105 transition-transform shrink-0">
+                              <svg className="h-3.5 w-3.5 fill-current" viewBox="0 0 24 24">
+                                <path d="M12 2C6.48 2 2 6.48 2 12c0 1.85.5 3.58 1.38 5.08L2 22l5.12-1.35C8.55 21.49 10.23 22 12 22c5.52 0 10-4.48 10-10S17.52 2 12 2zm1 14h-2v-2h2v2zm0-4h-2V7h2v5z"/>
+                              </svg>
+                            </div>
+                            <span className="font-medium">
+                              {t.auth.zaloSignIn}
+                            </span>
+                          </div>
+                          <span className="rounded-full bg-blue-500/25 border border-blue-400/30 px-2 py-0.5 text-[10px] font-semibold text-blue-300">
+                            Quét mã QR
+                          </span>
+                        </button>
+                      </div>
+                    )}
                   </div>
-                </div>
+                )}
 
                 {/* Divider */}
-                <div className="relative flex items-center justify-center">
-                  <div className="absolute inset-0 flex items-center">
-                    <div className="w-full border-t border-border/60" />
+                {(googleLoginEnabled || zaloLoginEnabled) && (
+                  <div className="relative flex items-center justify-center">
+                    <div className="absolute inset-0 flex items-center">
+                      <div className="w-full border-t border-border/60" />
+                    </div>
+                    <div className="relative bg-panel px-3 text-[11px] uppercase tracking-wider text-zinc-500">
+                      {t.auth.orContinueWith}
+                    </div>
                   </div>
-                  <div className="relative bg-panel px-3 text-[11px] uppercase tracking-wider text-zinc-500">
-                    {t.auth.orContinueWith}
-                  </div>
-                </div>
+                )}
 
                 {/* Password Login Form */}
                 <form onSubmit={handleLogin} className="space-y-4">
@@ -480,7 +480,7 @@ export default function LoginPage() {
       {/* Zalo Login Modal */}
       <ZaloLoginModal
         isOpen={isZaloModalOpen}
-        initialTab="apiGuide"
+        initialTab="popup"
         onClose={() => setIsZaloModalOpen(false)}
         onSuccess={(token) => {
           setToken(token);

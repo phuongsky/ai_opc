@@ -145,8 +145,23 @@ model CompanySettings {
   customLlmUrl        String?  @map("custom_llm_url")
   customLlmApiKey     String?  @map("custom_llm_api_key")
   orchestratorModel   String?  @map("orchestrator_model")
+  embeddingApiKey     String?  @map("embedding_api_key")
   temperature         Float?   @map("temperature")
   updatedAt           DateTime @updatedAt @map("updated_at")
 
   @@map("company_settings")
+}
+
+model SystemLookup {
+  id          String   @id @default(uuid())
+  category    String   // 'booking_status', 'payment_method', 'room_type'...
+  rawCode     Int      @map("raw_code")
+  standardKey String   @map("standard_key")
+  displayName String   @map("display_name")
+  description String?
+  isActive    Boolean  @default(true) @map("is_active")
+  updatedAt   DateTime @default(now()) @updatedAt @map("updated_at")
+
+  @@unique([category, rawCode])
+  @@map("system_lookups")
 }

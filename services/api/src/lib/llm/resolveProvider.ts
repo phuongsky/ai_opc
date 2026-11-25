@@ -14,6 +14,7 @@ export interface DynamicLlmConfig {
   customLlmUrl?: string | null;
   customLlmApiKey?: string | null;
   orchestratorModel?: string | null;
+  embeddingApiKey?: string | null;
   temperature?: number | null;
 }
 
@@ -43,8 +44,12 @@ export async function syncLlmConfigFromDb(): Promise<DynamicLlmConfig> {
         customLlmUrl: settings.customLlmUrl,
         customLlmApiKey: settings.customLlmApiKey,
         orchestratorModel: settings.orchestratorModel,
+        embeddingApiKey: settings.embeddingApiKey,
         temperature: settings.temperature,
       };
+      if (settings.embeddingApiKey) {
+        process.env.EMBEDDING_API_KEY = settings.embeddingApiKey;
+      }
     }
   } catch (err) {
     // eslint-disable-next-line no-console
@@ -64,12 +69,13 @@ export function getEffectiveLlmConfig(override?: Partial<DynamicLlmConfig>): Dyn
     customLlmUrl: dynamic.customLlmUrl || env.customLlmUrl || null,
     customLlmApiKey: dynamic.customLlmApiKey || env.customLlmApiKey || null,
     orchestratorModel: dynamic.orchestratorModel || env.orchestratorModel || null,
+    embeddingApiKey: dynamic.embeddingApiKey || env.embeddingApiKey || null,
     temperature: dynamic.temperature ?? 0.2,
   };
 }
 
 export const DEFAULT_MODELS: Record<LlmProvider, string> = {
-  gemini: "gemini-3.7-flash",
+  gemini: "gemini-2.5-flash",
   openai: "gpt-4o",
   anthropic: "claude-3-5-sonnet-20241022",
   custom: "auto",
@@ -80,9 +86,10 @@ export const DEFAULT_MODELS: Record<LlmProvider, string> = {
  */
 export const FALLBACK_MODELS: Record<LlmProvider, string[]> = {
   gemini: [
-    "gemini-3.6-flash",
-    "gemini-3.5-flash-lite",
-    "gemini-3.1-pro-preview",
+    "gemini-2.0-flash",
+    "gemini-1.5-flash",
+    "gemini-1.5-pro",
+    "gemini-2.5-pro",
   ],
   openai: ["gpt-4o-mini", "gpt-4-turbo", "gpt-3.5-turbo"],
   anthropic: ["claude-3-5-haiku-20241022", "claude-3-haiku-20240307"],
@@ -98,7 +105,9 @@ export function resolveLlm(override?: Partial<DynamicLlmConfig>): ResolvedLlm | 
 
     if (provider === "custom") {
       const baseUrl = cfg.customLlmUrl || "http://localhost:11434/v1";
-      const model = cfg.orchestratorModel || DEFAULT_MODELS.custom;
+      const model = cfg.orchestratorModel && !cfg.orchestratorModel.startsWith("gemini")
+        ? cfg.orchestratorModel
+        : (env.customLlmModel || DEFAULT_MODELS.custom);
       return {
         provider: "custom",
         model,
@@ -196,7 +205,10 @@ export function getAllAvailableProviders(override?: Partial<DynamicLlmConfig>): 
   if (cfg.customLlmUrl && !added.has("custom")) {
     providers.push({
       provider: "custom",
-      model: cfg.orchestratorModel || DEFAULT_MODELS.custom,
+      model:
+        cfg.orchestratorModel && !cfg.orchestratorModel.startsWith("gemini")
+          ? cfg.orchestratorModel
+          : env.customLlmModel || DEFAULT_MODELS.custom,
       apiKey: cfg.customLlmApiKey || undefined,
       baseUrl: cfg.customLlmUrl,
       auto: !cfg.orchestratorModel,

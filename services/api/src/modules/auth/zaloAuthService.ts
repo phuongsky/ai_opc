@@ -46,16 +46,21 @@ export interface ActiveZaloSession {
 let latestPendingSession: ActiveZaloSession | null = null;
 const sessionMap = new Map<string, ActiveZaloSession>();
 
+import { resolveDataDir } from "../../config/env";
+
 // Đường dẫn lưu file session bền vững
-const SESSION_FILE_PATH = path.resolve(process.cwd(), "data/zalo_session.json");
+export function getSessionFilePath(): string {
+  return path.join(resolveDataDir(), "zalo_session.json");
+}
 
 /**
  * Đọc phiên Zalo đã lưu từ đĩa
  */
 export function getSavedZaloSession(): ZaloContext | null {
   try {
-    if (fs.existsSync(SESSION_FILE_PATH)) {
-      const raw = fs.readFileSync(SESSION_FILE_PATH, "utf-8");
+    const sessionFile = getSessionFilePath();
+    if (fs.existsSync(sessionFile)) {
+      const raw = fs.readFileSync(sessionFile, "utf-8");
       const parsed = JSON.parse(raw);
       return parsed.context || null;
     }
@@ -70,8 +75,9 @@ export function getSavedZaloSession(): ZaloContext | null {
  */
 export function getSavedZaloFullSession(): { userId: string; context: ZaloContext; savedAt: string } | null {
   try {
-    if (fs.existsSync(SESSION_FILE_PATH)) {
-      const raw = fs.readFileSync(SESSION_FILE_PATH, "utf-8");
+    const sessionFile = getSessionFilePath();
+    if (fs.existsSync(sessionFile)) {
+      const raw = fs.readFileSync(sessionFile, "utf-8");
       return JSON.parse(raw);
     }
   } catch (err) {
@@ -85,11 +91,12 @@ export function getSavedZaloFullSession(): { userId: string; context: ZaloContex
  */
 function persistZaloSession(data: { userId: string; context: ZaloContext; savedAt: string }) {
   try {
-    const dir = path.dirname(SESSION_FILE_PATH);
+    const sessionFile = getSessionFilePath();
+    const dir = path.dirname(sessionFile);
     if (!fs.existsSync(dir)) {
       fs.mkdirSync(dir, { recursive: true });
     }
-    fs.writeFileSync(SESSION_FILE_PATH, JSON.stringify(data, null, 2), "utf-8");
+    fs.writeFileSync(sessionFile, JSON.stringify(data, null, 2), "utf-8");
   } catch (err) {
     console.error("[ZaloAuth] Lỗi lưu session xuống đĩa:", err);
   }
@@ -102,8 +109,9 @@ export function clearAllZaloSessions() {
   latestPendingSession = null;
   sessionMap.clear();
   try {
-    if (fs.existsSync(SESSION_FILE_PATH)) {
-      fs.unlinkSync(SESSION_FILE_PATH);
+    const sessionFile = getSessionFilePath();
+    if (fs.existsSync(sessionFile)) {
+      fs.unlinkSync(sessionFile);
       console.log("[ZaloAuth] Đã xóa toàn bộ file zalo_session.json trên đĩa.");
     }
   } catch (err) {

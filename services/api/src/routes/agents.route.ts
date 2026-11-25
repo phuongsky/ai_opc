@@ -4,6 +4,8 @@ import { db } from "../db/client";
 import { logAudit } from "../modules/audit/auditLogger";
 import { broadcastCompanyEvent } from "../ws/gateway";
 import { BUDGET_REASON_AGENT } from "../modules/cost/costTracker";
+import { rbacService } from "../modules/rbac/rbacService";
+import type { AuthedRequest } from "../middleware/requireAuth";
 import type { PermissionLevel, RiskLevel } from "@ai-opc/shared";
 
 export const agentsRouter = Router();
@@ -42,19 +44,43 @@ const updateAgentSchema = z.object({
 });
 
 // GET /api/agents — Lấy danh sách Agents (mặc định chỉ lấy active, hoặc tất cả nếu includeInactive=true)
-agentsRouter.get("/", async (req, res) => {
+agentsRouter.get("/", async (req: AuthedRequest, res) => {
   const includeInactive = req.query.includeInactive === "true" || req.query.all === "true";
-  const where = includeInactive ? {} : { active: true };
+  const where: any = includeInactive ? {} : { active: true };
+
+  const role = await rbacService.getUserRole(req);
+  const matrix = await rbacService.getPermissionsMatrix();
+  const perms = matrix.agentPermissions?.[role] || {};
+
+  // Nếu không phải Founder, chỉ lấy các Agent mà Role được cấp quyền Xem (canView = true)
+  if (role !== "founder") {
+    const allowedAgentIds = await rbacService.getAllowedAgentIdsForRole(role);
+    where.id = { in: allowedAgentIds };
+  }
+
   const agents = await db.agent.findMany({
     where,
     include: { department: true },
     orderBy: { createdAt: "asc" },
   });
-  res.json(agents);
+
+  // Gắn quyền canControl & canView tương ứng với vai trò của người gọi
+  const mapped = agents.map((a: any) => ({
+    ...a,
+    canView: role === "founder" ? true : Boolean(perms[a.id]?.canView),
+    canControl: role === "founder" ? true : Boolean(perms[a.id]?.canControl),
+  }));
+
+  res.json(mapped);
 });
 
 // POST /api/agents — Thuê Agent mới (Agent Lifecycle)
-agentsRouter.post("/", async (req, res) => {
+agentsRouter.post("/", async (req: AuthedRequest, res) => {
+  const role = await rbacService.getUserRole(req);
+  if (role !== "founder" && role !== "manager") {
+    return res.status(403).json({ error: "Chỉ Founder hoặc Manager mới có quyền tuyển dụng AI Agent mới." });
+  }
+
   const parsed = createAgentSchema.safeParse(req.body);
   if (!parsed.success) {
     return res.status(400).json({
@@ -131,12 +157,22 @@ agentsRouter.post("/", async (req, res) => {
 });
 
 // GET /api/agents/:id — Lấy chi tiết Agent
-agentsRouter.get("/:id", async (req, res) => {
+agentsRouter.get("/:id", async (req: AuthedRequest, res) => {
+  const role = await rbacService.getUserRole(req);
+  if (role !== "founder") {
+    const canView = await rbacService.canRoleViewAgent(role, req.params.id);
+    if (!canView) {
+      return res.status(403).json({ error: `Bạn không có quyền truy cập thông tin AI Agent "${req.params.id}" theo cấu hình RBAC.` });
+    }
+  }
+
   const agent = await db.agent.findUnique({
     where: { id: req.params.id },
     include: { toolPermissions: { include: { tool: true } }, department: true },
   });
   if (!agent) return res.status(404).json({ error: "Agent không tồn tại" });
+
+  const canControl = await rbacService.canRoleControlAgent(role, agent.id);
 
   // Thống kê nhanh để hiển thị ở trang chi tiết — tính luôn ở server để
   // frontend không phải tải toàn bộ task/log rồi tự group.
@@ -148,6 +184,8 @@ agentsRouter.get("/:id", async (req, res) => {
 
   res.json({
     ...agent,
+    canView: true,
+    canControl,
     stats: {
       tasksByStatus: Object.fromEntries(taskStats.map((s: any) => [s.status, s._count])),
       auditByAction: Object.fromEntries(toolCallStats.map((s: any) => [s.action, s._count])),
@@ -157,7 +195,15 @@ agentsRouter.get("/:id", async (req, res) => {
 });
 
 // PATCH /api/agents/:id — Cập nhật thông tin Agent (Sửa thông tin)
-agentsRouter.patch("/:id", async (req, res) => {
+agentsRouter.patch("/:id", async (req: AuthedRequest, res) => {
+  const role = await rbacService.getUserRole(req);
+  if (role !== "founder") {
+    const canControl = await rbacService.canRoleControlAgent(role, req.params.id);
+    if (!canControl) {
+      return res.status(403).json({ error: `Bạn không có quyền chỉnh sửa AI Agent "${req.params.id}" theo cấu hình RBAC.` });
+    }
+  }
+
   const parsed = updateAgentSchema.safeParse(req.body);
   if (!parsed.success) {
     return res.status(400).json({
@@ -203,7 +249,14 @@ agentsRouter.patch("/:id", async (req, res) => {
 });
 
 // POST /api/agents/:id/fire — Sa thải Agent (Soft-delete: active=false, status=SUSPENDED)
-agentsRouter.post("/:id/fire", async (req, res) => {
+agentsRouter.post("/:id/fire", async (req: AuthedRequest, res) => {
+  const role = await rbacService.getUserRole(req);
+  if (role !== "founder") {
+    const canControl = await rbacService.canRoleControlAgent(role, req.params.id);
+    if (!canControl) {
+      return res.status(403).json({ error: `Bạn không có quyền sa thải AI Agent "${req.params.id}" theo cấu hình RBAC.` });
+    }
+  }
   const agent = await db.agent.findUnique({ where: { id: req.params.id } });
   if (!agent) return res.status(404).json({ error: "Agent không tồn tại" });
 
@@ -234,7 +287,15 @@ agentsRouter.post("/:id/fire", async (req, res) => {
 });
 
 // POST /api/agents/:id/rehire — Tuyển dụng lại Agent (active=true, status=READY)
-agentsRouter.post("/:id/rehire", async (req, res) => {
+agentsRouter.post("/:id/rehire", async (req: AuthedRequest, res) => {
+  const role = await rbacService.getUserRole(req);
+  if (role !== "founder") {
+    const canControl = await rbacService.canRoleControlAgent(role, req.params.id);
+    if (!canControl) {
+      return res.status(403).json({ error: `Bạn không có quyền tuyển dụng lại AI Agent "${req.params.id}" theo cấu hình RBAC.` });
+    }
+  }
+
   const agent = await db.agent.findUnique({ where: { id: req.params.id } });
   if (!agent) return res.status(404).json({ error: "Agent không tồn tại" });
 
@@ -261,10 +322,18 @@ agentsRouter.post("/:id/rehire", async (req, res) => {
 });
 
 /** Lịch sử task đã/đang xử lý của 1 Agent, mới nhất trước. */
-agentsRouter.get("/:id/tasks", async (req, res) => {
+agentsRouter.get("/:id/tasks", async (req: AuthedRequest, res) => {
+  const role = await rbacService.getUserRole(req);
+  if (role !== "founder") {
+    const canView = await rbacService.canRoleViewAgent(role, req.params.id);
+    if (!canView) {
+      return res.status(403).json({ error: `Bạn không có quyền xem tác vụ của AI Agent "${req.params.id}" theo cấu hình RBAC.` });
+    }
+  }
+
   const limit = Math.min(Number(req.query.limit) || 50, 200);
   const tasks = await db.task.findMany({
-    where: { assignedTo: req.params.id },
+    where: { assignedTo: req.params.id, status: { not: "TRASH" } },
     orderBy: { createdAt: "desc" },
     take: limit,
   });
@@ -309,7 +378,15 @@ agentsRouter.get("/:id/tasks", async (req, res) => {
 });
 
 /** Audit log riêng của 1 Agent (mọi hành động: SUCCESS, FAILED, BLOCKED, AWAITING_APPROVAL...). */
-agentsRouter.get("/:id/audit-logs", async (req, res) => {
+agentsRouter.get("/:id/audit-logs", async (req: AuthedRequest, res) => {
+  const role = await rbacService.getUserRole(req);
+  if (role !== "founder") {
+    const canView = await rbacService.canRoleViewAgent(role, req.params.id);
+    if (!canView) {
+      return res.status(403).json({ error: `Bạn không có quyền xem nhật ký kiểm toán của AI Agent "${req.params.id}" theo cấu hình RBAC.` });
+    }
+  }
+
   const limit = Math.min(Number(req.query.limit) || 100, 500);
   const logs = await db.auditLog.findMany({
     where: { agentId: req.params.id },
@@ -323,7 +400,15 @@ agentsRouter.get("/:id/audit-logs", async (req, res) => {
  * Đặt/xoá trần ngân sách riêng cho 1 Agent (Budget Guardrail). Gửi
  * `budgetCapUsd: null` để xoá trần (không giới hạn).
  */
-agentsRouter.patch("/:id/budget", async (req, res) => {
+agentsRouter.patch("/:id/budget", async (req: AuthedRequest, res) => {
+  const role = await rbacService.getUserRole(req);
+  if (role !== "founder") {
+    const canControl = await rbacService.canRoleControlAgent(role, req.params.id);
+    if (!canControl) {
+      return res.status(403).json({ error: `Bạn không có quyền thay đổi ngân sách AI Agent "${req.params.id}" theo cấu hình RBAC.` });
+    }
+  }
+
   const { budgetCapUsd } = req.body as { budgetCapUsd: number | null };
   const agent = await db.agent.update({
     where: { id: req.params.id },
@@ -343,7 +428,15 @@ agentsRouter.patch("/:id/budget", async (req, res) => {
  * Reset `monthlyCostUsd` về 0 — dùng thủ công đầu mỗi tháng, hoặc gọi từ 1
  * cron job production.
  */
-agentsRouter.post("/:id/reset-cost", async (req, res) => {
+agentsRouter.post("/:id/reset-cost", async (req: AuthedRequest, res) => {
+  const role = await rbacService.getUserRole(req);
+  if (role !== "founder") {
+    const canControl = await rbacService.canRoleControlAgent(role, req.params.id);
+    if (!canControl) {
+      return res.status(403).json({ error: `Bạn không có quyền reset chi phí AI Agent "${req.params.id}" theo cấu hình RBAC.` });
+    }
+  }
+
   const current = await db.agent.findUnique({ where: { id: req.params.id } });
   const shouldUnsuspend = current?.suspendedReason === BUDGET_REASON_AGENT;
 
@@ -370,7 +463,15 @@ agentsRouter.post("/:id/reset-cost", async (req, res) => {
  * Cấp / Cập nhật quyền sử dụng Tool cho Agent (Permission Matrix).
  * Body: { toolId: string, permissionLevel: "L0" | "L1" | "L2" | "L3" | "L4" | "L5" | "L6" }
  */
-agentsRouter.post("/:id/permissions", async (req, res) => {
+agentsRouter.post("/:id/permissions", async (req: AuthedRequest, res) => {
+  const role = await rbacService.getUserRole(req);
+  if (role !== "founder") {
+    const canControl = await rbacService.canRoleControlAgent(role, req.params.id);
+    if (!canControl) {
+      return res.status(403).json({ error: `Bạn không có quyền cập nhật quyền Tool cho AI Agent "${req.params.id}" theo cấu hình RBAC.` });
+    }
+  }
+
   const agentId = req.params.id;
   const { toolId, permissionLevel } = req.body as { toolId: string; permissionLevel: PermissionLevel };
 
@@ -409,7 +510,15 @@ agentsRouter.post("/:id/permissions", async (req, res) => {
 /**
  * Xóa quyền sử dụng Tool của Agent.
  */
-agentsRouter.delete("/:id/permissions/:toolId", async (req, res) => {
+agentsRouter.delete("/:id/permissions/:toolId", async (req: AuthedRequest, res) => {
+  const role = await rbacService.getUserRole(req);
+  if (role !== "founder") {
+    const canControl = await rbacService.canRoleControlAgent(role, req.params.id);
+    if (!canControl) {
+      return res.status(403).json({ error: `Bạn không có quyền gỡ quyền Tool của AI Agent "${req.params.id}" theo cấu hình RBAC.` });
+    }
+  }
+
   const { id: agentId, toolId } = req.params;
 
   const existing = await db.agentToolPermission.findUnique({

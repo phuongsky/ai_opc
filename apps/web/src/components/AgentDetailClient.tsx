@@ -16,10 +16,12 @@ import {
   UserX,
   UserCheck,
   Building2,
+  Users,
   X,
   AlertTriangle,
   Layers,
   Sparkles,
+  Eye,
 } from "lucide-react";
 import type { Agent, AuditLogEntry, Task } from "@ai-opc/shared";
 import {
@@ -128,18 +130,26 @@ export default function AgentDetailClient({ agentId }: { agentId: string }) {
   // Fire / Rehire State
   const [showFireConfirm, setShowFireConfirm] = useState(false);
   const [processingFire, setProcessingFire] = useState(false);
+  const [forbiddenError, setForbiddenError] = useState(false);
 
   async function refresh() {
     if (!agentId) return;
-    const [a, t, l] = await Promise.all([
-      fetchAgentDetail(agentId),
-      fetchAgentTasks(agentId),
-      fetchAgentAuditLogs(agentId),
-    ]);
-    setAgent(a);
-    setBudgetInput(a.budgetCapUsd != null ? String(a.budgetCapUsd) : "");
-    setTasks(t);
-    setLogs(l);
+    try {
+      const [a, t, l] = await Promise.all([
+        fetchAgentDetail(agentId),
+        fetchAgentTasks(agentId),
+        fetchAgentAuditLogs(agentId),
+      ]);
+      setAgent(a);
+      setBudgetInput(a.budgetCapUsd != null ? String(a.budgetCapUsd) : "");
+      setTasks(t);
+      setLogs(l);
+      setForbiddenError(false);
+    } catch (err: any) {
+      if (err?.message?.includes("403") || err?.message?.toLowerCase().includes("forbidden")) {
+        setForbiddenError(true);
+      }
+    }
   }
 
   useEffect(() => {
@@ -156,10 +166,47 @@ export default function AgentDetailClient({ agentId }: { agentId: string }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [lastEvent, agentId]);
 
+  if (forbiddenError) {
+    return (
+      <main className="mx-auto max-w-2xl p-8 mt-12 text-center">
+        <div className="rounded-2xl border border-rose-500/30 bg-rose-500/10 p-8 shadow-2xl backdrop-blur-md">
+          <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-2xl bg-rose-500/20 text-rose-400 mb-4">
+            <ShieldAlert className="h-7 w-7" />
+          </div>
+          <h2 className="text-xl font-bold text-zinc-100 mb-2">
+            {locale === "vi" ? "Không có quyền truy cập Agent" : "Access Denied"}
+          </h2>
+          <p className="text-sm text-zinc-400 mb-6 max-w-md mx-auto">
+            {locale === "vi"
+              ? "Tài khoản của bạn không được phân quyền xem hoặc quản trị AI Agent này theo cấu hình RBAC."
+              : "Your account is not permitted to view or manage this AI Agent under current RBAC settings."}
+          </p>
+          <div className="flex justify-center gap-3">
+            <Link
+              href="/agents"
+              className="inline-flex items-center gap-2 rounded-xl bg-accent px-4 py-2.5 text-xs font-semibold text-black transition-all hover:bg-accent/90"
+            >
+              <Users className="h-4 w-4" />
+              <span>{locale === "vi" ? "Danh sách AI Agents được cấp quyền" : "Allowed Agents"}</span>
+            </Link>
+            <Link
+              href="/"
+              className="inline-flex items-center gap-2 rounded-xl border border-border/80 bg-white/5 px-4 py-2.5 text-xs font-medium text-zinc-300 transition-colors hover:bg-white/10"
+            >
+              <ArrowLeft className="h-4 w-4" />
+              <span>{t.nav.backToDashboard}</span>
+            </Link>
+          </div>
+        </div>
+      </main>
+    );
+  }
+
   if (!agent) {
     return <main className="p-6 text-sm text-zinc-500">{t.common.loading}</main>;
   }
 
+  const canControl = agent.canControl !== false;
   const isFired = agent.active === false;
   const isCoo = agent.id === "ai_coo";
   const totalTasks = Object.values(agent.stats.tasksByStatus).reduce((a, b) => a + b, 0);
@@ -255,9 +302,16 @@ export default function AgentDetailClient({ agentId }: { agentId: string }) {
   return (
     <main className="mx-auto max-w-5xl space-y-6 p-6">
       <div className="flex items-center justify-between">
-        <Link href="/" className="inline-flex items-center gap-1.5 text-sm text-zinc-400 hover:text-zinc-200">
-          <ArrowLeft className="h-4 w-4" /> {t.nav.backToDashboard}
-        </Link>
+        <div className="flex items-center gap-3 text-sm">
+          <Link href="/" className="inline-flex items-center gap-1.5 text-zinc-400 hover:text-zinc-200">
+            <ArrowLeft className="h-4 w-4" /> {t.nav.backToDashboard}
+          </Link>
+          <span className="text-zinc-600">/</span>
+          <Link href="/agents" className="inline-flex items-center gap-1.5 text-zinc-400 hover:text-accent">
+            <Users className="h-3.5 w-3.5 text-accent" />
+            <span>{locale === "vi" ? "Quản trị AI Agents" : "AI Agents Hub"}</span>
+          </Link>
+        </div>
         <LanguageSwitcher />
       </div>
 
@@ -275,14 +329,16 @@ export default function AgentDetailClient({ agentId }: { agentId: string }) {
               </p>
             </div>
           </div>
-          <button
-            onClick={handleRehireAgent}
-            disabled={processingFire}
-            className="flex shrink-0 items-center gap-1.5 rounded-xl bg-emerald-600 px-4 py-2 text-xs font-bold text-white shadow-lg hover:bg-emerald-500 transition-all disabled:opacity-60 cursor-pointer"
-          >
-            <UserCheck className="h-4 w-4" />
-            <span>{processingFire ? t.common.loading : t.agents.rehireBtn}</span>
-          </button>
+          {canControl && (
+            <button
+              onClick={handleRehireAgent}
+              disabled={processingFire}
+              className="flex shrink-0 items-center gap-1.5 rounded-xl bg-emerald-600 px-4 py-2 text-xs font-bold text-white shadow-lg hover:bg-emerald-500 transition-all disabled:opacity-60 cursor-pointer"
+            >
+              <UserCheck className="h-4 w-4" />
+              <span>{processingFire ? t.common.loading : t.agents.rehireBtn}</span>
+            </button>
+          )}
         </div>
       )}
 
@@ -304,6 +360,12 @@ export default function AgentDetailClient({ agentId }: { agentId: string }) {
                   {t.agents.activeStatus}
                 </span>
               )}
+              {!canControl && (
+                <span className="rounded-full border border-sky-500/40 bg-sky-500/10 px-2.5 py-0.5 text-xs font-medium text-sky-400 flex items-center gap-1">
+                  <Eye className="h-3 w-3" />
+                  <span>{locale === "vi" ? "Chỉ xem (Read-only)" : "Read-only"}</span>
+                </span>
+              )}
             </div>
             <p className="mt-1 text-sm text-zinc-400">
               {agent.title}
@@ -312,25 +374,27 @@ export default function AgentDetailClient({ agentId }: { agentId: string }) {
             </p>
           </div>
 
-          <div className="flex items-center gap-2">
-            <button
-              onClick={openEditModal}
-              className="flex items-center gap-1.5 rounded-xl border border-border/80 bg-white/5 px-3.5 py-2 text-xs font-medium text-zinc-200 transition-colors hover:bg-white/10 hover:border-zinc-700 cursor-pointer"
-            >
-              <Edit3 className="h-3.5 w-3.5 text-accent" />
-              <span>{t.agents.editBtn}</span>
-            </button>
-
-            {!isCoo && !isFired && (
+          {canControl && (
+            <div className="flex items-center gap-2">
               <button
-                onClick={() => setShowFireConfirm(true)}
-                className="flex items-center gap-1.5 rounded-xl border border-rose-500/30 bg-rose-500/10 px-3.5 py-2 text-xs font-medium text-rose-400 transition-colors hover:bg-rose-500/20 hover:border-rose-500/50 cursor-pointer"
+                onClick={openEditModal}
+                className="flex items-center gap-1.5 rounded-xl border border-border/80 bg-white/5 px-3.5 py-2 text-xs font-medium text-zinc-200 transition-colors hover:bg-white/10 hover:border-zinc-700 cursor-pointer"
               >
-                <UserX className="h-3.5 w-3.5" />
-                <span>{t.agents.fireBtn}</span>
+                <Edit3 className="h-3.5 w-3.5 text-accent" />
+                <span>{t.agents.editBtn}</span>
               </button>
-            )}
-          </div>
+
+              {!isCoo && !isFired && (
+                <button
+                  onClick={() => setShowFireConfirm(true)}
+                  className="flex items-center gap-1.5 rounded-xl border border-rose-500/30 bg-rose-500/10 px-3.5 py-2 text-xs font-medium text-rose-400 transition-colors hover:bg-rose-500/20 hover:border-rose-500/50 cursor-pointer"
+                >
+                  <UserX className="h-3.5 w-3.5" />
+                  <span>{t.agents.fireBtn}</span>
+                </button>
+              )}
+            </div>
+          )}
         </div>
 
         <p className="mt-3 text-sm text-zinc-300 leading-relaxed">{agent.mission}</p>
@@ -357,13 +421,15 @@ export default function AgentDetailClient({ agentId }: { agentId: string }) {
             <span className="flex items-center gap-1.5">
               <DollarSign className="h-3.5 w-3.5 text-emerald-400" /> {locale === "vi" ? "Chi phí tích luỹ" : "Accumulated Cost"}
             </span>
-            <button
-              onClick={handleResetCost}
-              title="Reset về $0"
-              className="rounded-lg p-1 text-zinc-400 hover:bg-white/10 hover:text-zinc-100 transition-colors cursor-pointer"
-            >
-              <RotateCcw className="h-3.5 w-3.5" />
-            </button>
+            {canControl && (
+              <button
+                onClick={handleResetCost}
+                title="Reset về $0"
+                className="rounded-lg p-1 text-zinc-400 hover:bg-white/10 hover:text-zinc-100 transition-colors cursor-pointer"
+              >
+                <RotateCcw className="h-3.5 w-3.5" />
+              </button>
+            )}
           </div>
           <p className="mt-1.5 text-2xl font-bold text-zinc-100">${Number(agent.monthlyCostUsd).toFixed(4)}</p>
           <p className="mt-1 text-[11px] text-zinc-500">{modelCallCount} {locale === "vi" ? "lần gọi model" : "model calls"}</p>
@@ -400,21 +466,29 @@ export default function AgentDetailClient({ agentId }: { agentId: string }) {
                 type="number"
                 step="0.001"
                 min="0"
+                disabled={!canControl}
                 placeholder="e.g.: 5.00"
                 value={budgetInput}
                 onChange={(e) => setBudgetInput(e.target.value)}
-                className="w-full rounded-xl border border-border/80 bg-canvas/90 py-2 pl-8 pr-4 text-sm text-zinc-100 placeholder-zinc-600 outline-none focus:border-accent focus:ring-1 focus:ring-accent"
+                className="w-full rounded-xl border border-border/80 bg-canvas/90 py-2 pl-8 pr-4 text-sm text-zinc-100 placeholder-zinc-600 outline-none focus:border-accent focus:ring-1 focus:ring-accent disabled:opacity-60 disabled:cursor-not-allowed"
               />
             </div>
           </div>
-          <button
-            type="submit"
-            disabled={savingBudget}
-            className="flex items-center gap-1.5 rounded-xl bg-accent px-4 py-2 text-sm font-semibold text-black transition-all hover:bg-accent/90 disabled:opacity-60 cursor-pointer"
-          >
-            <Save className="h-4 w-4" />
-            <span>{savingBudget ? t.common.saving : t.common.save}</span>
-          </button>
+          {canControl ? (
+            <button
+              type="submit"
+              disabled={savingBudget}
+              className="flex items-center gap-1.5 rounded-xl bg-accent px-4 py-2 text-sm font-semibold text-black transition-all hover:bg-accent/90 disabled:opacity-60 cursor-pointer"
+            >
+              <Save className="h-4 w-4" />
+              <span>{savingBudget ? t.common.saving : t.common.save}</span>
+            </button>
+          ) : (
+            <div className="flex items-center gap-1.5 rounded-xl border border-zinc-700 bg-zinc-800/40 px-3.5 py-2 text-xs text-zinc-400">
+              <Eye className="h-3.5 w-3.5 text-zinc-400" />
+              <span>{locale === "vi" ? "Chế độ xem" : "Read-only"}</span>
+            </div>
+          )}
         </form>
         <p className="text-xs text-zinc-500 leading-relaxed">
           {locale === "vi"
@@ -429,6 +503,7 @@ export default function AgentDetailClient({ agentId }: { agentId: string }) {
         agentName={agent.name}
         permissions={agent.toolPermissions}
         onUpdated={refresh}
+        readOnly={!canControl}
       />
 
       {/* Tabs: Task history / Audit log */}
@@ -489,7 +564,7 @@ export default function AgentDetailClient({ agentId }: { agentId: string }) {
         </div>
 
         {tab === "tasks" ? (
-          <AgentTaskHistory tasks={tasks} />
+          <AgentTaskHistory tasks={tasks} onRefresh={refresh} />
         ) : (
           <AgentAuditLogViewer logs={logs} />
         )}

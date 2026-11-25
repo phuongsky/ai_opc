@@ -31,12 +31,14 @@ export type TaskStatus =
   | "ESCALATED"
   | "AWAITING_APPROVAL"
   | "AWAITING_INTERNAL_REVIEW"
-  | "COMPLETED";
+  | "COMPLETED"
+  | "TRASH";
 
 export type DecisionStatus = "PENDING" | "APPROVED" | "REJECTED";
 
-/** 7 loại Founder Command chuẩn + Navigation Commands. */
+/** Founder Command chuẩn + Navigation Commands. */
 export type FounderCommandType =
+  | "/hire"
   | "/goal"
   | "/plan"
   | "/analyze"
@@ -70,6 +72,8 @@ export interface Agent {
   suspendedReason?: string | null;
   monthlyCostUsd: number;
   active?: boolean;
+  canControl?: boolean;
+  canView?: boolean;
   createdAt: string; // ISO date
 }
 
@@ -133,13 +137,23 @@ export interface AuditLogEntry {
   timestamp: string;
 }
 
+export interface SystemLogEntry {
+  id: string;
+  timestamp: string;
+  level: "info" | "warn" | "error" | "debug";
+  message: string;
+  source?: string;
+}
+
 // ---- WebSocket event envelope -------------------------------------------
 
 export type CompanyEventType =
   | "TASK_UPDATED"
   | "DECISION_REQUIRED"
   | "AUDIT_LOG"
-  | "AGENT_STATUS";
+  | "AGENT_STATUS"
+  | "SYSTEM_LOG"
+  | "RBAC_PERMISSIONS_UPDATED";
 
 export interface CompanyEvent<T = unknown> {
   type: CompanyEventType;
@@ -190,20 +204,144 @@ export type NotificationCategory =
   | "EMERGENCY_STOP"
   | "SYSTEM";
 
+export interface TelegramRecipient {
+  id: string;
+  chatId: string;
+}
+
+export interface ZaloRecipient {
+  id: string;
+  phone: string;
+  groupId: string;
+}
+
+export interface ZaloBotRecipient {
+  id: string;
+  chatId: string;
+  groupId: string;
+}
+
 export interface NotificationPreferences {
   sendToTelegram: boolean;
   sendToEmail: boolean;
   sendToZalo: boolean;
+  sendToZaloBot?: boolean;
   notifyBudgetCapExceeded: boolean;
   notifyDecisionRequired: boolean;
   notifyBlockedTasks: boolean;
   notifyWeeklyReport: boolean;
   notifyEmergencyStop: boolean;
   customTelegramChatId?: string | null;
+  customTelegramRecipients?: TelegramRecipient[];
+  customTelegramToken?: string | null;
   customEmailRecipient?: string | null;
+  customSmtpHost?: string | null;
+  customSmtpPort?: number | string | null;
+  customSmtpUser?: string | null;
+  customSmtpPass?: string | null;
+  customSmtpFrom?: string | null;
   customZaloPhone?: string | null;
   customZaloGroupId?: string | null;
+  customZaloRecipients?: ZaloRecipient[];
+  customZaloBotChatId?: string | null;
+  customZaloBotRecipients?: ZaloBotRecipient[];
+  customZaloBotToken?: string | null;
   updatedAt?: string;
 }
+
+// ---- RBAC & System Permissions -------------------------------------------
+
+export type RbacRoleId = "founder" | "manager" | "operator" | "viewer";
+
+export type RbacModuleId =
+  | "cockpit_kanban"
+  | "agent_management"
+  | "decision_approval"
+  | "knowledge_lookups"
+  | "company_settings"
+  | "audit_console_logs"
+  | "security_2fa";
+
+export interface RbacRoleDefinition {
+  id: RbacRoleId;
+  name: string;
+  nameVi: string;
+  description: string;
+  descriptionVi: string;
+  badge: string;
+  isImmutableAdmin?: boolean;
+}
+
+export interface RbacModuleDefinition {
+  id: RbacModuleId;
+  name: string;
+  nameVi: string;
+  description: string;
+  descriptionVi: string;
+  category: "operations" | "governance" | "infrastructure";
+}
+
+export type RbacCommandId =
+  | "hire"
+  | "report"
+  | "do"
+  | "goal"
+  | "status"
+  | "settings"
+  | "knowledge"
+  | "audit"
+  | "security"
+  | "stop"
+  | "plan"
+  | "analyze";
+
+export interface RbacCommandDefinition {
+  id: RbacCommandId;
+  command: string;
+  prefix: FounderCommandType;
+  name: string;
+  nameVi: string;
+  description: string;
+  descriptionVi: string;
+  danger?: boolean;
+  isNav?: boolean;
+  category: "dispatch" | "navigation" | "governance";
+}
+
+export interface RbacAgentPermission {
+  canView: boolean;
+  canControl: boolean;
+}
+
+export interface RbacPermissionsMatrix {
+  roles: RbacRoleDefinition[];
+  modules: RbacModuleDefinition[];
+  commands: RbacCommandDefinition[];
+  permissions: Record<RbacRoleId, Record<RbacModuleId, boolean>>;
+  agentPermissions: Record<RbacRoleId, Record<string, RbacAgentPermission>>;
+  commandPermissions: Record<RbacRoleId, Record<RbacCommandId, boolean>>;
+  updatedAt?: string;
+  updatedBy?: string;
+}
+
+// ---- External Data Source Config ---------------------------------------
+
+export type ExternalDbEngine = "sqlserver" | "postgresql" | "mysql";
+
+export interface ExternalDbConfig {
+  engine: ExternalDbEngine;
+  host: string;
+  port: number;
+  database: string;
+  user: string;
+  password?: string;
+  passwordMasked?: string;
+  encrypt: boolean;
+  trustServerCertificate: boolean;
+  isConfigured?: boolean;
+}
+
+
+
 
 

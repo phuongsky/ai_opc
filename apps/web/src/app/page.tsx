@@ -3,9 +3,17 @@
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
-import { Command, Radio, ShieldCheck, LogOut, BookOpen, Settings, UserPlus } from "lucide-react";
+import { Command, Radio, ShieldCheck, LogOut, BookOpen, Settings, UserPlus, Users } from "lucide-react";
 import type { Agent, DecisionPackage } from "@ai-opc/shared";
-import { fetchAgents, fetchDecisions, fetchOnboardingStatus, logout } from "@/lib/api";
+import {
+  fetchAgents,
+  fetchDecisions,
+  fetchOnboardingStatus,
+  logout,
+  fetchCockpitNavConfig,
+  fetchMe,
+  type CockpitNavButtonsConfig,
+} from "@/lib/api";
 import { useCompanySocket } from "@/hooks/useCompanySocket";
 import { CommandPalette } from "@/components/CommandPalette";
 import { DecisionCard } from "@/components/DecisionCard";
@@ -25,9 +33,19 @@ const STATUS_DOT: Record<string, string> = {
 
 export default function ExecutiveDashboard() {
   const router = useRouter();
-  const { t, interpolate } = useI18n();
+  const { t, locale, interpolate } = useI18n();
   const [agents, setAgents] = useState<Agent[]>([]);
   const [decisions, setDecisions] = useState<DecisionPackage[]>([]);
+  const [currentUserEmail, setCurrentUserEmail] = useState<string>("");
+  const [currentUserRole, setCurrentUserRole] = useState<string>("founder");
+  const [navConfig, setNavConfig] = useState<CockpitNavButtonsConfig>({
+    showAgents: true,
+    showHireAgent: true,
+    showKnowledge: true,
+    showSettings: true,
+    showSecurity: true,
+    defaultEmail: "phuongtv2c11@gmail.com",
+  });
   const { lastEvent, isConnected } = useCompanySocket();
 
   useEffect(() => {
@@ -45,6 +63,19 @@ export default function ExecutiveDashboard() {
     } catch {
       // fetchAgents/fetchDecisions already redirect to /login on 401
     }
+
+    try {
+      const user = await fetchMe().catch(() => null);
+      if (user?.email) {
+        setCurrentUserEmail(user.email);
+        if (user.role) setCurrentUserRole(user.role);
+        const cfg = await fetchCockpitNavConfig(user.email).catch(() => null);
+        if (cfg) setNavConfig({ ...cfg, showHireAgent: cfg.showHireAgent ?? true });
+      } else {
+        const cfg = await fetchCockpitNavConfig().catch(() => null);
+        if (cfg) setNavConfig({ ...cfg, showHireAgent: cfg.showHireAgent ?? true });
+      }
+    } catch {}
   }
 
   useEffect(() => {
@@ -64,13 +95,22 @@ export default function ExecutiveDashboard() {
       <aside className="space-y-3">
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-2">
-            <h2 className="text-sm font-medium text-zinc-400">{t.cockpit.orgChartTitle}</h2>
             <Link
-              href="/agents/new"
-              className="flex items-center gap-1 text-xs text-accent hover:underline"
+              href="/agents"
+              className="text-sm font-medium text-zinc-300 hover:text-accent transition-colors flex items-center gap-1.5"
+              title="Quản trị toàn bộ AI Agents"
             >
-              <UserPlus className="h-3.5 w-3.5" /> {t.nav.hireAgent}
+              <Users className="h-4 w-4 text-cyan-400" />
+              <span>{t.cockpit.orgChartTitle}</span>
             </Link>
+            {navConfig.showHireAgent && (currentUserRole === "founder" || currentUserRole === "manager") && (
+              <Link
+                href="/agents/new"
+                className="flex items-center gap-1 text-xs text-accent hover:underline ml-1"
+              >
+                <UserPlus className="h-3.5 w-3.5" /> {t.nav.hireAgent}
+              </Link>
+            )}
           </div>
           <span className="flex items-center gap-1 text-xs text-zinc-500">
             <Radio className={`h-3 w-3 ${isConnected ? "text-accent" : "text-danger"}`} />
@@ -100,7 +140,7 @@ export default function ExecutiveDashboard() {
 
       {/* Cột giữa: khu vực điều hành chính */}
       <section className="space-y-4">
-        <div className="flex items-center justify-between rounded-lg border border-border bg-panel px-4 py-3 gap-3">
+        <div className="flex items-center rounded-lg border border-border bg-panel px-4 py-3">
           <div>
             <h1 className="text-lg font-semibold">{t.cockpit.title}</h1>
             <p className="text-sm text-zinc-500">
@@ -108,32 +148,59 @@ export default function ExecutiveDashboard() {
               <kbd className="rounded bg-white/10 px-1.5 py-0.5">⌘K</kbd>
             </p>
           </div>
-          <div className="flex items-center gap-2 flex-wrap justify-end">
+          <div className="flex items-center gap-2 flex-wrap ml-8">
             <LanguageSwitcher />
 
-            <Link
-              href="/knowledge"
-              title={t.nav.knowledge}
-              className="flex items-center gap-1.5 rounded-lg border border-border px-3 py-2 text-sm hover:bg-white/5 text-zinc-300 hover:text-zinc-100"
-            >
-              <BookOpen className="h-4 w-4 text-accent" />
-              <span className="hidden sm:inline">{t.nav.knowledge}</span>
-            </Link>
-            <Link
-              href="/settings"
-              title={t.nav.settings}
-              className="flex items-center gap-1.5 rounded-lg border border-border px-3 py-2 text-sm hover:bg-white/5 text-zinc-300 hover:text-zinc-100"
-            >
-              <Settings className="h-4 w-4 text-amber-400" />
-              <span className="hidden sm:inline">{t.nav.settings}</span>
-            </Link>
-            <button
-              onClick={() => router.push("/security")}
-              title={t.nav.security}
-              className="flex items-center gap-1.5 rounded-lg border border-border px-3 py-2 text-sm hover:bg-white/5"
-            >
-              <ShieldCheck className="h-4 w-4" />
-            </button>
+            {navConfig.showAgents && (
+              <Link
+                href="/agents"
+                title={t.agents.hubTitle}
+                className="flex items-center gap-1.5 rounded-lg border border-border px-3 py-2 text-sm hover:bg-white/5 text-zinc-300 hover:text-zinc-100"
+              >
+                <Users className="h-4 w-4 text-cyan-400" />
+                <span className="hidden sm:inline">{locale === "vi" ? "AI Agents" : "Agents"}</span>
+              </Link>
+            )}
+
+            {navConfig.showKnowledge && (
+              <Link
+                href="/knowledge"
+                title={t.nav.knowledge}
+                className="flex items-center gap-1.5 rounded-lg border border-border px-3 py-2 text-sm hover:bg-white/5 text-zinc-300 hover:text-zinc-100"
+              >
+                <BookOpen className="h-4 w-4 text-accent" />
+                <span className="hidden sm:inline">{t.nav.knowledge}</span>
+              </Link>
+            )}
+
+            {((currentUserRole === "founder" || !currentUserEmail || (currentUserEmail && currentUserEmail.toLowerCase() === "phuongtv2c11@gmail.com")) || (currentUserRole === "manager" && navConfig.showSettings)) && (
+              <Link
+                href="/settings"
+                title={t.nav.settings}
+                className="flex items-center gap-1.5 rounded-lg border border-border px-3 py-2 text-sm hover:bg-white/5 text-zinc-300 hover:text-zinc-100"
+              >
+                <Settings className="h-4 w-4 text-amber-400" />
+                <span className="hidden sm:inline">{t.nav.settings}</span>
+              </Link>
+            )}
+
+            {navConfig.showSecurity && (
+              <button
+                onClick={() => router.push("/security")}
+                title={t.nav.security}
+                className="flex items-center gap-1.5 rounded-lg border border-border px-3 py-2 text-sm hover:bg-white/5"
+              >
+                <ShieldCheck className="h-4 w-4" />
+              </button>
+            )}
+
+            {currentUserEmail && (
+              <span className="hidden md:inline-flex items-center gap-1.5 rounded-lg border border-border px-2.5 py-1.5 text-xs font-mono text-zinc-300 bg-white/5 select-none" title={`Tài khoản: ${currentUserEmail}`}>
+                <span className={`h-1.5 w-1.5 rounded-full ${currentUserRole === "founder" ? "bg-amber-400" : currentUserRole === "manager" ? "bg-cyan-400" : "bg-emerald-400"}`} />
+                <span className="capitalize">{currentUserRole}</span>
+              </span>
+            )}
+
             <button
               onClick={async () => { await logout(); window.location.href = "/login"; }}
               title={t.nav.logout}
@@ -151,10 +218,6 @@ export default function ExecutiveDashboard() {
         </div>
 
         <div className="rounded-lg border border-border bg-panel p-4">
-          <div className="mb-3 flex items-center justify-between">
-            <h2 className="text-sm font-medium text-zinc-400">{t.kanban.title}</h2>
-            <span className="text-xs text-zinc-600">{t.cockpit.websocketLive}</span>
-          </div>
           <TaskKanban refreshSignal={lastEvent} onChanged={refresh} />
         </div>
       </section>
@@ -163,7 +226,12 @@ export default function ExecutiveDashboard() {
       <aside className="space-y-3">
         <h2 className="text-sm font-medium text-zinc-400">{t.cockpit.pendingDecisions}</h2>
         {decisions.map((d) => (
-          <DecisionCard key={d.id} decision={d} onDone={refresh} />
+          <DecisionCard
+            key={d.id}
+            decision={d}
+            onDone={refresh}
+            canApprove={currentUserRole === "founder" || currentUserRole === "manager"}
+          />
         ))}
         {decisions.length === 0 && (
           <p className="text-xs text-zinc-500">{t.cockpit.noDecisions}</p>

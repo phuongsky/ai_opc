@@ -5,7 +5,17 @@ import type { CompanyEvent } from "@ai-opc/shared";
 let wss: WebSocketServer | null = null;
 
 export function initWebSocketGateway(server: Server): void {
-  wss = new WebSocketServer({ server, path: "/ws" });
+  wss = new WebSocketServer({ noServer: true });
+
+  server.on("upgrade", (request, socket, head) => {
+    const { pathname } = new URL(request.url || "", `http://${request.headers.host || "localhost"}`);
+    if (pathname === "/ws") {
+      wss!.handleUpgrade(request, socket, head, (ws) => {
+        wss!.emit("connection", ws, request);
+      });
+    }
+  });
+
   wss.on("connection", (socket) => {
     socket.send(JSON.stringify({ type: "AGENT_STATUS", payload: { hello: "connected" } }));
   });
