@@ -38,6 +38,11 @@ import {
   resetSystemAccountPassword,
   deleteSystemAccount,
 } from "../modules/auth/accountService";
+import {
+  syncVideoConfigFromDb,
+  getCachedDynamicVideoConfig,
+  setDynamicVideoConfig,
+} from "../modules/videos/videoProvider";
 
 export const settingsRouter = Router();
 
@@ -769,6 +774,84 @@ settingsRouter.delete("/accounts/:id", async (req, res) => {
     res.status(400).json({ error: err.message || "Lỗi khi xóa tài khoản" });
   }
 });
+
+// ---- Video Generation AI Provider Settings ---------------------------------
+
+const updateVideoSettingsSchema = z.object({
+  videoGenApiUrl: z.string().trim().nullable().optional(),
+  videoGenApiKey: z.string().trim().nullable().optional(),
+});
+
+// GET /api/settings/video — Lấy cấu hình dịch vụ sinh Video AI
+settingsRouter.get("/video", async (_req, res) => {
+  await syncVideoConfigFromDb();
+  const cfg = getCachedDynamicVideoConfig();
+  const url = cfg.videoGenApiUrl || process.env.VIDEO_GEN_API_URL || "";
+  const rawKey = cfg.videoGenApiKey || process.env.VIDEO_GEN_API_KEY || "";
+
+  res.json({
+    videoGenApiUrl: url,
+    videoGenApiKeyMasked: maskApiKey(rawKey),
+    hasVideoGenApiKey: Boolean(rawKey),
+    activeProvider: url ? "http" : "simulated",
+  });
+});
+
+// PUT /api/settings/video — Cập nhật cấu hình dịch vụ sinh Video AI
+settingsRouter.put("/video", async (req, res) => {
+  const parsed = updateVideoSettingsSchema.safeParse(req.body);
+  if (!parsed.success) {
+    return res.status(400).json({
+      error: "Dữ liệu cấu hình Video AI không hợp lệ",
+      details: parsed.error.format(),
+    });
+  }
+
+  const dataToUpdate: any = {};
+  if (parsed.data.videoGenApiUrl !== undefined) {
+    dataToUpdate.videoGenApiUrl = parsed.data.videoGenApiUrl || null;
+  }
+  if (parsed.data.videoGenApiKey !== undefined) {
+    if (parsed.data.videoGenApiKey === "") dataToUpdate.videoGenApiKey = null;
+    else if (!parsed.data.videoGenApiKey?.includes("••••")) dataToUpdate.videoGenApiKey = parsed.data.videoGenApiKey;
+  }
+
+  await (db as any).companySettings.upsert({
+    where: { id: "singleton" },
+    update: dataToUpdate,
+    create: { id: "singleton", ...dataToUpdate },
+  });
+
+  if (dataToUpdate.videoGenApiUrl !== undefined) {
+    if (dataToUpdate.videoGenApiUrl) process.env.VIDEO_GEN_API_URL = dataToUpdate.videoGenApiUrl;
+    else delete process.env.VIDEO_GEN_API_URL;
+  }
+  if (dataToUpdate.videoGenApiKey !== undefined) {
+    if (dataToUpdate.videoGenApiKey) process.env.VIDEO_GEN_API_KEY = dataToUpdate.videoGenApiKey;
+    else delete process.env.VIDEO_GEN_API_KEY;
+  }
+
+  setDynamicVideoConfig(dataToUpdate);
+
+  await logAudit({
+    action: "VIDEO_SETTINGS_UPDATED",
+    resultSummary: `Founder cập nhật cấu hình dịch vụ sinh Video AI (Provider: ${dataToUpdate.videoGenApiUrl ? "HTTP Adapter" : "Mô phỏng"})`,
+    riskLevel: "R1",
+  });
+
+  const cfg = getCachedDynamicVideoConfig();
+  const url = cfg.videoGenApiUrl || process.env.VIDEO_GEN_API_URL || "";
+  const rawKey = cfg.videoGenApiKey || process.env.VIDEO_GEN_API_KEY || "";
+
+  res.json({
+    success: true,
+    videoGenApiUrl: url,
+    videoGenApiKeyMasked: maskApiKey(rawKey),
+    hasVideoGenApiKey: Boolean(rawKey),
+    activeProvider: url ? "http" : "simulated",
+  });
+});
+
 
 
 

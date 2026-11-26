@@ -1204,8 +1204,90 @@ export async function deleteSystemAccount(
   return handleResponse(res);
 }
 
+// ---- Video Agent (agent_create_video_ai) ------------------------------------
+
+import type { VideoAsset, VideoStatus } from "@ai-opc/shared";
+
+export interface VideoStats {
+  total: number;
+  byStatus: Record<string, number>;
+  totalCostUsd: number;
+}
+
+export interface VideoInputPayload {
+  title: string;
+  brief?: string | null;
+  script?: string | null;
+  platform?: string | null;
+  aspectRatio?: string;
+  durationSec?: number | null;
+  tags?: string[];
+}
+
+export async function fetchVideos(
+  params: { status?: string; q?: string; limit?: number } = {}
+): Promise<VideoAsset[]> {
+  const qs = new URLSearchParams();
+  if (params.status) qs.set("status", params.status);
+  if (params.q) qs.set("q", params.q);
+  if (params.limit) qs.set("limit", String(params.limit));
+  const res = await fetch(`${API_BASE}/api/videos${qs.toString() ? `?${qs}` : ""}`, { headers: authHeaders() });
+  return handleResponse(res);
+}
+
+export async function fetchVideoStats(): Promise<VideoStats> {
+  const res = await fetch(`${API_BASE}/api/videos/stats`, { headers: authHeaders() });
+  return handleResponse(res);
+}
+
+export async function createVideoAsset(payload: VideoInputPayload): Promise<VideoAsset> {
+  const res = await fetch(`${API_BASE}/api/videos`, {
+    method: "POST",
+    headers: authHeaders(),
+    body: JSON.stringify(payload),
+  });
+  return handleResponse(res);
+}
+
+export async function setVideoAssetStatus(id: string, status: VideoStatus, note?: string): Promise<VideoAsset> {
+  const res = await fetch(`${API_BASE}/api/videos/${encodeURIComponent(id)}/status`, {
+    method: "POST",
+    headers: authHeaders(),
+    body: JSON.stringify({ status, note: note ?? null }),
+  });
+  return handleResponse(res);
+}
+
+export async function archiveVideoAsset(id: string): Promise<VideoAsset> {
+  const res = await fetch(`${API_BASE}/api/videos/${encodeURIComponent(id)}`, {
+    method: "DELETE",
+    headers: authHeaders(),
+  });
+  return handleResponse(res);
+}
 
 
 
+export interface VideoSettingsData {
+  videoGenApiUrl: string;
+  videoGenApiKeyMasked: string | null;
+  hasVideoGenApiKey: boolean;
+  activeProvider: "http" | "simulated";
+}
 
+export async function fetchVideoSettings(): Promise<VideoSettingsData> {
+  const res = await fetch(`${API_BASE}/api/settings/video`, { headers: authHeaders() });
+  return handleResponse(res);
+}
 
+export async function updateVideoSettings(payload: {
+  videoGenApiUrl?: string | null;
+  videoGenApiKey?: string | null;
+}): Promise<VideoSettingsData> {
+  const res = await fetch(`${API_BASE}/api/settings/video`, {
+    method: "PUT",
+    headers: authHeaders(),
+    body: JSON.stringify(payload),
+  });
+  return handleResponse(res);
+}

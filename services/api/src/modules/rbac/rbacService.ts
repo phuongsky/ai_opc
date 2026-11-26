@@ -345,6 +345,7 @@ const DEFAULT_KNOWN_AGENTS = [
   "agent_tech",
   "agent_finance",
   "agent_sunright_hotel",
+  "agent_create_video_ai",
 ];
 
 function getRbacFilePath(): string {

@@ -16,6 +16,7 @@ import { decideAgentAction, type ToolStepRecord } from "./agentReasoner";
 import { lookupService } from "../lookups/lookupService";
 import { sendTaskResultToInboundChannel } from "../notifications/inboundResponseRouter";
 import { executeHotelSunrightCrud } from "../datasources/hotelSunrightCrud";
+import { isVideoAgent } from "../videos/videoAgent";
 import { getExternalDb } from "../datasources/externalDbClient";
 import { generateRoomNightCountPdf } from "../reports/roomNightReportPdf";
 import type { RiskLevel } from "@ai-opc/shared";
@@ -2775,7 +2776,10 @@ async function processOneTask(task: {
     }
   };
 
-  const taskText = `${task.title} ${task.objective}`.toLowerCase();
+  // Các shortcut báo cáo bên dưới đều dựa trên từ khóa khách sạn (sinh nhật, hủy, doanh thu...).
+  // Agent video bỏ qua chúng (taskText rỗng → mọi cờ isXxxTask = false) để task video
+  // như "video chúc mừng sinh nhật khách" không bị chuyển nhầm sang truy vấn DB khách sạn.
+  const taskText = isVideoAgent(agentId) ? "" : `${task.title} ${task.objective}`.toLowerCase();
 
   const isExpectedDeparturesTask =
     taskText.includes("dự kiến đi") ||

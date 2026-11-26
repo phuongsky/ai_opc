@@ -153,7 +153,8 @@ export type CompanyEventType =
   | "AUDIT_LOG"
   | "AGENT_STATUS"
   | "SYSTEM_LOG"
-  | "RBAC_PERMISSIONS_UPDATED";
+  | "RBAC_PERMISSIONS_UPDATED"
+  | "VIDEO_UPDATED";
 
 export interface CompanyEvent<T = unknown> {
   type: CompanyEventType;
@@ -341,7 +342,40 @@ export interface ExternalDbConfig {
   isConfigured?: boolean;
 }
 
+// ---- Video Agent (agent_create_video_ai) -----------------------------------
 
+export type VideoStatus =
+  | "IDEA"
+  | "SCRIPTED"
+  | "GENERATING"
+  | "REVIEW"
+  | "APPROVED"
+  | "REJECTED"
+  | "PUBLISHED"
+  | "FAILED"
+  | "ARCHIVED";
 
-
-
+export interface VideoAsset {
+  id: string;
+  title: string;
+  brief: string | null;
+  script: string | null;
+  status: VideoStatus;
+  platform: string | null;
+  aspectRatio: string;
+  durationSec: number | null;
+  tags: string[];
+  assetUrl: string | null;
+  thumbnailUrl: string | null;
+  provider: string | null;
+  providerJobId: string | null;
+  publishedUrl: string | null;
+  costUsd: number;
+  notes: string | null;
+  agentId: string;
+  taskId: string | null;
+  createdBy: string;
+  createdAt: string;
+  updatedAt: string;
+  publishedAt: string | null;
+}

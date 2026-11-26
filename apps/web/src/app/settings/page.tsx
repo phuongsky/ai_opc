@@ -10,6 +10,7 @@ import {
   CheckCircle2,
   AlertTriangle,
   Sparkles,
+  Film,
   Building2,
   Bell,
   Send,
@@ -88,6 +89,8 @@ import {
   updateAuthChannelsSettings,
   fetchCockpitNavConfig,
   updateCockpitNavConfig,
+  fetchVideoSettings,
+  updateVideoSettings,
   fetchMe,
   fetchSystemAccounts,
   createSystemAccount,
@@ -96,6 +99,7 @@ import {
   deleteSystemAccount,
   type SystemAccount,
   type CockpitNavButtonsConfig,
+  type VideoSettingsData,
   type SystemLookupItem,
   type LlmSettingsData,
   type SystemLogItem,
@@ -198,6 +202,16 @@ export default function SettingsPage() {
     costUsd?: number;
     error?: string;
   } | null>(null);
+
+  // Video Generation Provider State
+  const [videoGenApiUrl, setVideoGenApiUrl] = useState("");
+  const [videoGenApiKey, setVideoGenApiKey] = useState("");
+  const [videoMaskedKey, setVideoMaskedKey] = useState<string | null>(null);
+  const [hasVideoKey, setHasVideoKey] = useState(false);
+  const [videoActiveProvider, setVideoActiveProvider] = useState<"http" | "simulated">("simulated");
+  const [showVideoKey, setShowVideoKey] = useState(false);
+  const [savingVideo, setSavingVideo] = useState(false);
+  const [videoMessage, setVideoMessage] = useState<{ type: "success" | "error"; text: string } | null>(null);
 
   // Notification State
   const [notifStatus, setNotifStatus] = useState<NotificationStatus | null>(null);
@@ -365,6 +379,7 @@ export default function SettingsPage() {
       externalDb: true,
       systemLookups: true,
       aiGateway: true,
+      videoProvider: true,
       budgetCap: true,
       costCycle: true,
       rbacMatrix: true,
@@ -794,7 +809,7 @@ export default function SettingsPage() {
 
   async function refresh() {
     try {
-      const [s, a, n, p, llm, lk, lg, rbac, extDb, authChan, meUser, cNav, accs] = await Promise.all([
+      const [s, a, n, p, llm, lk, lg, rbac, extDb, authChan, meUser, cNav, accs, vid] = await Promise.all([
         fetchCompanySettings(),
         fetchAgents(),
         fetchNotificationStatus().catch(() => null),
@@ -808,6 +823,7 @@ export default function SettingsPage() {
         fetchMe().catch(() => null),
         fetchCockpitNavConfig().catch(() => null),
         fetchSystemAccounts().catch(() => []),
+        fetchVideoSettings().catch(() => null),
       ]);
       setCapInput(s.monthlyBudgetCapUsd != null ? String(s.monthlyBudgetCapUsd) : "");
       setAgents(a || []);
@@ -845,6 +861,12 @@ export default function SettingsPage() {
           custom: llm.customLlmApiKeyMasked,
           embedding: llm.embeddingApiKeyMasked,
         });
+      }
+      if (vid) {
+        setVideoGenApiUrl(vid.videoGenApiUrl || "");
+        setVideoMaskedKey(vid.videoGenApiKeyMasked || null);
+        setHasVideoKey(vid.hasVideoGenApiKey);
+        setVideoActiveProvider(vid.activeProvider || "simulated");
       }
       if (lk) {
         setLookups(lk.items || []);
@@ -977,6 +999,34 @@ export default function SettingsPage() {
       setLlmMessage({ type: "error", text: err.message || "Lỗi lưu cấu hình AI" });
     } finally {
       setSavingLlm(false);
+    }
+  }
+
+  async function handleSaveVideoSettings(e?: React.FormEvent) {
+    if (e) e.preventDefault();
+    setSavingVideo(true);
+    setVideoMessage(null);
+    try {
+      const res = await updateVideoSettings({
+        videoGenApiUrl: videoGenApiUrl.trim() || null,
+        videoGenApiKey: videoGenApiKey.trim() || undefined,
+      });
+      setVideoGenApiUrl(res.videoGenApiUrl || "");
+      setVideoMaskedKey(res.videoGenApiKeyMasked);
+      setHasVideoKey(res.hasVideoGenApiKey);
+      setVideoActiveProvider(res.activeProvider);
+      setVideoGenApiKey("");
+      setVideoMessage({
+        type: "success",
+        text: locale === "vi" ? "Đã lưu cấu hình dịch vụ Video AI thành công!" : "Video AI settings saved successfully!",
+      });
+    } catch (err: any) {
+      setVideoMessage({
+        type: "error",
+        text: err.message || (locale === "vi" ? "Lỗi khi lưu cấu hình Video AI" : "Failed to save Video AI settings"),
+      });
+    } finally {
+      setSavingVideo(false);
     }
   }
 
@@ -5099,6 +5149,166 @@ export default function SettingsPage() {
             </>
           )}
         </div>
+      )}
+
+      {/* Video Generation AI Provider Card */}
+      {loaded && (
+        <form
+          onSubmit={handleSaveVideoSettings}
+          className={`rounded-2xl border border-border/80 bg-panel/90 p-6 shadow-xl transition-all ${
+            collapsedCards.videoProvider ? "space-y-0" : "space-y-4"
+          }`}
+        >
+          <div
+            className={`flex flex-wrap items-center justify-between gap-4 ${
+              collapsedCards.videoProvider ? "" : "border-b border-border/60 pb-4"
+            }`}
+          >
+            <div
+              className="space-y-0.5 cursor-pointer select-none"
+              onClick={() => toggleCard("videoProvider")}
+            >
+              <div className="flex items-center gap-2">
+                <h2 className="flex items-center gap-2 text-base font-semibold text-zinc-100">
+                  <Film className="h-5 w-5 text-accent" />
+                  {locale === "vi" ? "Dịch vụ Sinh Video AI (Video Provider)" : "Video Generation AI Provider"}
+                </h2>
+                <span
+                  className={`rounded-full border px-2.5 py-0.5 text-[11px] font-mono font-medium ${
+                    videoActiveProvider === "http"
+                      ? "border-cyan-500/30 bg-cyan-500/10 text-cyan-300"
+                      : "border-zinc-500/30 bg-zinc-500/10 text-zinc-300"
+                  }`}
+                >
+                  {videoActiveProvider === "http"
+                    ? "HTTP ADAPTER"
+                    : (locale === "vi" ? "MÔ PHỎNG (MOCK)" : "SIMULATED")}
+                </span>
+              </div>
+              <p className="text-xs text-zinc-400">
+                {locale === "vi"
+                  ? "Cấu hình API kết nối dịch vụ sinh video (Veo, Runway, Kling, Luma) hoặc dùng Mock Provider mô phỏng"
+                  : "Configure video generation API (Veo, Runway, Kling, Luma) or use internal mock simulation"}
+              </p>
+            </div>
+
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => toggleCard("videoProvider")}
+                className="rounded-xl border border-border/70 bg-canvas/70 p-2 text-zinc-400 hover:text-zinc-100 hover:border-zinc-600 transition-colors"
+                title={collapsedCards.videoProvider ? "Mở rộng" : "Thu gọn"}
+              >
+                <ChevronDown
+                  className={`h-4 w-4 transition-transform duration-200 ${
+                    collapsedCards.videoProvider ? "" : "rotate-180"
+                  }`}
+                />
+              </button>
+            </div>
+          </div>
+
+          {!collapsedCards.videoProvider && (
+            <div className="space-y-4 pt-1">
+              {/* Presets banner */}
+              <div className="rounded-xl border border-accent/20 bg-accent/5 p-3 text-xs text-zinc-300 space-y-1.5">
+                <div className="font-semibold text-accent flex items-center gap-1.5">
+                  <Sparkles className="h-3.5 w-3.5" />
+                  {locale === "vi" ? "Chế độ hoạt động & Nhà cung cấp" : "Operational Mode & Providers"}
+                </div>
+                <p className="text-[11px] text-zinc-400 leading-relaxed">
+                  {locale === "vi"
+                    ? "• Để trống API URL: Chạy ở chế độ Mô phỏng (Simulated) — hoàn toàn miễn phí, Agent vẫn kiểm tra kịch bản và tiến trình đầy đủ.\n• Điền API URL: Kết nối adapter tương thích HTTP (hỗ trợ tích hợp Runway Gen-3, Kling AI, Luma Dream Machine, Google Veo...)"
+                    : "• Leave URL empty: Simulated mock mode — completely free, Agent tests scripts and review workflow.\n• Fill URL: Connect to HTTP adapter (compatible with Runway Gen-3, Kling, Luma, Google Veo...)"}
+                </p>
+              </div>
+
+              {/* API URL Input */}
+              <div className="space-y-1.5">
+                <label className="text-xs font-semibold text-zinc-200 flex items-center justify-between">
+                  <span>{locale === "vi" ? "Video Generator API URL" : "Video Generator API URL"}</span>
+                  <span className="text-[11px] font-normal text-zinc-500">
+                    {locale === "vi" ? "Để trống = Mock Simulation" : "Empty = Mock Simulation"}
+                  </span>
+                </label>
+                <input
+                  type="url"
+                  value={videoGenApiUrl}
+                  onChange={(e) => setVideoGenApiUrl(e.target.value)}
+                  placeholder="https://api.your-video-service.com/v1/generate"
+                  className="w-full rounded-xl border border-border/80 bg-canvas/90 px-3.5 py-2.5 text-xs text-zinc-100 placeholder-zinc-600 outline-none focus:border-accent focus:ring-1 focus:ring-accent font-mono"
+                />
+              </div>
+
+              {/* API Key Input */}
+              <div className="space-y-1.5">
+                <label className="text-xs font-semibold text-zinc-200 flex items-center justify-between">
+                  <span>{locale === "vi" ? "API Key / Bearer Token" : "API Key / Bearer Token"}</span>
+                  {hasVideoKey && (
+                    <span className="text-[11px] text-emerald-400 flex items-center gap-1">
+                      <Check className="h-3 w-3" />
+                      {locale === "vi" ? "Đã lưu key" : "Key configured"} ({videoMaskedKey})
+                    </span>
+                  )}
+                </label>
+                <div className="relative">
+                  <input
+                    type={showVideoKey ? "text" : "password"}
+                    value={videoGenApiKey}
+                    onChange={(e) => setVideoGenApiKey(e.target.value)}
+                    placeholder={hasVideoKey ? (videoMaskedKey || "••••••••") : (locale === "vi" ? "Nhập Bearer API Token (nếu dịch vụ yêu cầu)..." : "Enter Bearer API Token...")}
+                    className="w-full rounded-xl border border-border/80 bg-canvas/90 px-3.5 py-2.5 pr-10 text-xs text-zinc-100 placeholder-zinc-600 outline-none focus:border-accent focus:ring-1 focus:ring-accent font-mono"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowVideoKey(!showVideoKey)}
+                    className="absolute right-3 top-1/2 -translate-y-1/2 text-zinc-500 hover:text-zinc-300"
+                  >
+                    {showVideoKey ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                  </button>
+                </div>
+              </div>
+
+              {/* Status Message */}
+              {videoMessage && (
+                <div
+                  className={`rounded-xl border p-3 text-xs flex items-center gap-2 ${
+                    videoMessage.type === "success"
+                      ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-300"
+                      : "border-rose-500/30 bg-rose-500/10 text-rose-300"
+                  }`}
+                >
+                  {videoMessage.type === "success" ? (
+                    <CheckCircle2 className="h-4 w-4 shrink-0" />
+                  ) : (
+                    <AlertTriangle className="h-4 w-4 shrink-0" />
+                  )}
+                  <span>{videoMessage.text}</span>
+                </div>
+              )}
+
+              {/* Actions */}
+              <div className="flex items-center justify-between pt-2">
+                <div className="text-[11px] text-zinc-500">
+                  {locale === "vi" ? "Biến môi trường tương đương: " : "Equivalent env variables: "}
+                  <code className="text-zinc-400">VIDEO_GEN_API_URL</code>, <code className="text-zinc-400">VIDEO_GEN_API_KEY</code>
+                </div>
+                <button
+                  type="submit"
+                  disabled={savingVideo}
+                  className="inline-flex items-center gap-1.5 rounded-xl bg-accent px-4 py-2 text-xs font-semibold text-canvas transition-all hover:bg-accent/90 disabled:opacity-50 cursor-pointer shadow-lg shadow-accent/20"
+                >
+                  {savingVideo ? (
+                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                  ) : (
+                    <Save className="h-3.5 w-3.5" />
+                  )}
+                  {locale === "vi" ? "Lưu Cấu Hình Video" : "Save Video Settings"}
+                </button>
+              </div>
+            </div>
+          )}
+        </form>
       )}
 
       {/* Main Budget Guardrail Form */}

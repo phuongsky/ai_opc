@@ -12,6 +12,7 @@ import { db } from "../../db/client";
 import { registerToolDriver } from "../governance/toolGateway";
 import { executeHotelSunrightCrud } from "../datasources/hotelSunrightCrud";
 import { describeHotelSunrightSchema } from "../datasources/schemaIntrospection";
+import { registerVideoToolDrivers } from "../videos/videoTools";
 
 // ---- Search Engine Implementation ------------------------------------------
 
@@ -333,6 +334,9 @@ export function registerAllToolDrivers(): void {
   };
   registerToolDriver("tool_hotel_dbs_describe_schema", hotelSchemaDriver);
   registerToolDriver("tool_hotel_dbs_describe_schema", hotelSchemaDriver);
+
+  // 11. Video Agent (agent_create_video_ai): search / draft / set_status / generate / publish
+  registerVideoToolDrivers();
 }
 
 

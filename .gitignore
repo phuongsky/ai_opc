@@ -77,6 +77,7 @@ scripts/winapp_tools.json
 .qodo/
 .cursor/
 .superpowers/
+.requirement-router/
 
 # ==========================================
 # 7. Internal Documents & Private Workspaces
@@ -91,6 +92,8 @@ USER_GUIDE.md
 docs/sleuth
 docs/superpowers
 docs/dbs
+docs/ai-company-os
+/ai-agent-router*
 
 # ==========================================
 # 8. Operating System Metadata

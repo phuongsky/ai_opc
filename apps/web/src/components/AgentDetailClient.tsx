@@ -40,6 +40,7 @@ import { useCompanySocket } from "@/hooks/useCompanySocket";
 import { AgentAuditLogViewer } from "@/components/AgentAuditLogViewer";
 import { AgentTaskHistory } from "@/components/AgentTaskHistory";
 import { AgentToolPermissionManager, type ToolPermissionRow } from "@/components/AgentToolPermissionManager";
+import { AgentVideoManager } from "@/components/AgentVideoManager";
 import { useI18n } from "@/context/I18nContext";
 import { LanguageSwitcher } from "@/components/LanguageSwitcher";
 
@@ -505,6 +506,9 @@ export default function AgentDetailClient({ agentId }: { agentId: string }) {
         onUpdated={refresh}
         readOnly={!canControl}
       />
+
+      {/* Video Library — chỉ hiện cho agent quản lý video */}
+      {agent.id === "agent_create_video_ai" && <AgentVideoManager readOnly={!canControl} />}
 
       {/* Tabs: Task history / Audit log */}
       <div className="rounded-2xl border border-border/80 bg-panel/90 p-6 shadow-xl space-y-5">

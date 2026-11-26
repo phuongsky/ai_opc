@@ -13,6 +13,8 @@ import { generateContent, isLlmConfigured, extractJsonObject } from "../../lib/l
 import { recordModelCost } from "../cost/costTracker";
 import { searchKnowledge, formatKnowledgeForPrompt } from "../memory/knowledgeBase";
 import { lookupService } from "../lookups/lookupService";
+import { isVideoAgent } from "../videos/videoAgent";
+import { buildVideoSystemPrompt, buildVideoUserPrompt } from "../videos/videoPrompt";
 
 export interface ToolStepRecord {
   step: number;
@@ -1238,9 +1240,13 @@ export async function decideAgentAction(
   }
 
   // Gọi LLM sinh quyết định
+  // Agent video có prompt riêng (không mang các quy tắc khách sạn Intelio_Sunset).
+  const videoMode = isVideoAgent(agentId);
   const result = await generateContent(
-    buildSystemPrompt(agent),
-    buildUserPrompt(task, toolOptions, previousSteps, knowledgeContext),
+    videoMode ? buildVideoSystemPrompt(agent) : buildSystemPrompt(agent),
+    videoMode
+      ? buildVideoUserPrompt(task, toolOptions, previousSteps, knowledgeContext)
+      : buildUserPrompt(task, toolOptions, previousSteps, knowledgeContext),
     { maxTokens: 4000, temperature: 0.1, jsonMode: true }
   );
 
@@ -1261,7 +1267,8 @@ export async function decideAgentAction(
   }
 
   // 2. Tự động khôi phục ý định thông minh dựa trên Task & Nội dung phản hồi
-  const recovered = recoverIntentFromTaskAndText(result.text, task, previousSteps, validToolIds);
+  // (Bỏ qua cứu hộ theo từ khóa khách sạn với agent video: "phòng", "khách"... không liên quan.)
+  const recovered = videoMode ? null : recoverIntentFromTaskAndText(result.text, task, previousSteps, validToolIds);
   if (recovered) {
     console.log(`[AgentReasoner] Đã tự động khôi phục ý định hành động cho agent ${agentId}:`, recovered);
     return recovered;

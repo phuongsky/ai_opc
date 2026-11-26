@@ -32,6 +32,22 @@ export async function selfHealDatabase(): Promise<void> {
       console.log("[selfHealDb] ✓ Đã bổ sung thành công cột temperature.");
     }
 
+    if (colList.length > 0 && !colNames.has("video_gen_api_url")) {
+      console.log("[selfHealDb] Phát hiện thiếu cột video_gen_api_url trong company_settings. Đang tự động bổ sung...");
+      await (db as any).$executeRawUnsafe(
+        "ALTER TABLE company_settings ADD COLUMN video_gen_api_url TEXT;"
+      );
+      console.log("[selfHealDb] ✓ Đã bổ sung thành công cột video_gen_api_url.");
+    }
+
+    if (colList.length > 0 && !colNames.has("video_gen_api_key")) {
+      console.log("[selfHealDb] Phát hiện thiếu cột video_gen_api_key trong company_settings. Đang tự động bổ sung...");
+      await (db as any).$executeRawUnsafe(
+        "ALTER TABLE company_settings ADD COLUMN video_gen_api_key TEXT;"
+      );
+      console.log("[selfHealDb] ✓ Đã bổ sung thành công cột video_gen_api_key.");
+    }
+
     // 2. Đảm bảo bảng system_lookups tồn tại
     const tables = (await (db as any).$queryRawUnsafe(
       "SELECT name FROM sqlite_master WHERE type='table' AND name='system_lookups';"
@@ -58,5 +74,40 @@ export async function selfHealDatabase(): Promise<void> {
     }
   } catch (err: any) {
     console.warn("[selfHealDb] Cảnh báo kiểm tra cấu trúc SQLite:", err?.message || err);
+  }
+
+  // 3. Đảm bảo bảng videos (Agent quản lý video) tồn tại — idempotent.
+  try {
+    await (db as any).$executeRawUnsafe(`
+      CREATE TABLE IF NOT EXISTS videos (
+        id VARCHAR(50) PRIMARY KEY,
+        title TEXT NOT NULL,
+        brief TEXT,
+        script TEXT,
+        status VARCHAR(20) NOT NULL DEFAULT 'IDEA',
+        platform VARCHAR(30),
+        aspect_ratio VARCHAR(10) NOT NULL DEFAULT '16:9',
+        duration_sec INTEGER,
+        tags TEXT,
+        asset_url TEXT,
+        thumbnail_url TEXT,
+        provider VARCHAR(50),
+        provider_job_id VARCHAR(200),
+        published_url TEXT,
+        cost_usd REAL NOT NULL DEFAULT 0,
+        notes TEXT,
+        agent_id VARCHAR(50) NOT NULL DEFAULT 'agent_create_video_ai',
+        task_id VARCHAR(50),
+        created_by VARCHAR(50) NOT NULL DEFAULT 'AGENT',
+        created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        published_at DATETIME
+      );
+    `);
+    await (db as any).$executeRawUnsafe(
+      "CREATE INDEX IF NOT EXISTS videos_status_idx ON videos(status);"
+    );
+  } catch (err: any) {
+    console.warn("[selfHealDb] Cảnh báo khởi tạo bảng videos:", err?.message || err);
   }
 }

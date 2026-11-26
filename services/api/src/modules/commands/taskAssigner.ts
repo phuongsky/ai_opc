@@ -39,6 +39,10 @@ const AGENT_KEYWORDS: Record<string, string[]> = {
     "product", "sản phẩm", "tính năng", "feature", "roadmap", "spec",
     "tài liệu", "nghiên cứu", "khảo sát", "benchmark", "đối thủ"
   ],
+  agent_create_video_ai: [
+    "video", "clip", "reel", "reels", "shorts", "kịch bản video", "dựng video", "làm video",
+    "quay video", "tạo video", "storyboard", "thumbnail", "xuất bản video", "đăng video"
+  ],
   agent_sunright_hotel: [
     "hotel", "khách sạn", "sunright", "phòng", "đặt phòng", "booking", "room",
     "checkin", "check-in", "checkout", "check-out", "lưu trú", "deluxe", "standard",
@@ -101,6 +105,9 @@ const AGENT_ALIAS: Record<string, string> = {
   "@cpo": "agent_product",
   "@coo": "ai_coo",
   "@ai_coo": "ai_coo",
+  "@video": "agent_create_video_ai",
+  "@ai_video": "agent_create_video_ai",
+  "@videos": "agent_create_video_ai",
   "@hotel": "agent_sunright_hotel",
   "@sunright": "agent_sunright_hotel",
   "@ai_sunright": "agent_sunright_hotel",

@@ -17,6 +17,8 @@ import { notificationsRouter } from "./routes/notifications.route";
 import { toolsRouter } from "./routes/tools.route";
 import { departmentsRouter } from "./routes/departments.route";
 import { onboardingRouter } from "./routes/onboarding.route";
+import { videosRouter } from "./routes/videos.route";
+import { ensureVideoAgent } from "./modules/videos/videoAgent";
 import { registerAllToolDrivers } from "./modules/agents/toolDrivers";
 import { startAgentWorker } from "./modules/agents/agentWorker";
 import { startMonthlyCostResetCron } from "./modules/cost/monthlyCostResetCron";
@@ -25,6 +27,7 @@ import { startTelegramInboundPolling } from "./modules/notifications/telegramInb
 import { startZaloInboundListener } from "./modules/notifications/zaloInbound";
 import { startZaloBotInboundPolling } from "./modules/notifications/zaloBotInbound";
 import { syncLlmConfigFromDb } from "./lib/llm/resolveProvider";
+import { syncVideoConfigFromDb } from "./modules/videos/videoProvider";
 import { initSystemLogger } from "./modules/systemLogs/systemLogger";
 import { initZaloQrBridge } from "./modules/auth/zaloQrBridge";
 import { freePortIfOccupied } from "./lib/portManager";
@@ -87,6 +90,7 @@ app.use("/api/knowledge",     requireAuth, knowledgeRouter);
 app.use("/api/settings",      requireAuth, settingsRouter);
 app.use("/api/notifications", requireAuth, notificationsRouter);
 app.use("/api/onboarding",    requireAuth, onboardingRouter);
+app.use("/api/videos",        requireAuth, videosRouter);
 
 const httpServer = createServer(app);
 initWebSocketGateway(httpServer);
@@ -138,10 +142,22 @@ function startServer(port: number) {
       await selfHealDatabase();
     } catch {}
     try {
+      const { created } = await ensureVideoAgent();
+      if (created) console.log("[bootstrap] Đã tạo agent_create_video_ai (AI-Video) và các tool video.");
+    } catch (e) {
+      console.warn("[bootstrap] Không thể khởi tạo Video Agent (đã chạy migration bảng videos chưa?):", e);
+    }
+    try {
       await syncLlmConfigFromDb();
       console.log("[bootstrap] Cấu hình AI Gateway đã đồng bộ từ Database.");
     } catch (e) {
       console.warn("[bootstrap] Lỗi đồng bộ AI Gateway từ DB:", e);
+    }
+    try {
+      await syncVideoConfigFromDb();
+      console.log("[bootstrap] Cấu hình Video Provider đã đồng bộ từ Database.");
+    } catch (e) {
+      console.warn("[bootstrap] Lỗi đồng bộ Video Provider từ DB:", e);
     }
     ensureFounderAccount().then((f) => {
       console.log(`[bootstrap] Đã xác nhận tài khoản Founder: ${f.email}`);

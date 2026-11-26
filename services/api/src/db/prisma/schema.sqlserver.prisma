@@ -148,6 +148,8 @@ model CompanySettings {
   orchestratorModel   String?  @map("orchestrator_model")
   embeddingApiKey     String?  @map("embedding_api_key")
   temperature         Float?   @map("temperature")
+  videoGenApiUrl      String?  @map("video_gen_api_url")
+  videoGenApiKey      String?  @map("video_gen_api_key")
   updatedAt           DateTime @updatedAt @map("updated_at")
 
   @@map("company_settings")
@@ -165,4 +167,32 @@ model SystemLookup {
 
   @@unique([category, rawCode])
   @@map("system_lookups")
+}
+
+model Video {
+  id            String    @id
+  title         String
+  brief         String?
+  script        String?
+  status        String    @default("IDEA")
+  platform      String?
+  aspectRatio   String    @default("16:9") @map("aspect_ratio")
+  durationSec   Int?      @map("duration_sec")
+  tags          String?   // JSON array dạng text, portable đa DB
+  assetUrl      String?   @map("asset_url")
+  thumbnailUrl  String?   @map("thumbnail_url")
+  provider      String?
+  providerJobId String?   @map("provider_job_id")
+  publishedUrl  String?   @map("published_url")
+  costUsd       Float     @default(0) @map("cost_usd")
+  notes         String?
+  agentId       String    @default("agent_create_video_ai") @map("agent_id")
+  taskId        String?   @map("task_id")
+  createdBy     String    @default("AGENT") @map("created_by")
+  createdAt     DateTime  @default(now()) @map("created_at")
+  updatedAt     DateTime  @default(now()) @updatedAt @map("updated_at")
+  publishedAt   DateTime? @map("published_at")
+
+  @@index([status])
+  @@map("videos")
 }

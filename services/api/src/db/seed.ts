@@ -6,6 +6,7 @@
  * Note: dùng upsert thay vì createMany+skipDuplicates vì SQLite không hỗ trợ skipDuplicates.
  */
 import { db } from "./client";
+import { videoAgentSeed, videoToolsSeed, videoToolPermissionsSeed } from "../modules/videos/videoAgent";
 
 const departments = [
   { id: "dept_sales", name: "Sales" },
@@ -88,6 +89,7 @@ const agents = [
     mission: "Quản lý đặt phòng, lưu trú, check-in, check-out và dữ liệu khách sạn Sunright qua database Intelio_Sunset.",
     autonomyLevel: 2,
   },
+  videoAgentSeed, // agent_create_video_ai — AI quản lý video
 ];
 
 const tools = [
@@ -148,6 +150,7 @@ const tools = [
     riskLevel: "R3",
     requiresApproval: true,
   },
+  ...videoToolsSeed,
 ];
 
 const agentToolPermissions = [
@@ -175,6 +178,7 @@ const agentToolPermissions = [
   { agentId: "agent_hotel", toolId: "tool_hotel_sunright_describe_schema", permissionLevel: "L1" },
   { agentId: "agent_hotel", toolId: "tool_hotel_sunright_read", permissionLevel: "L2" },
   { agentId: "agent_hotel", toolId: "tool_hotel_sunright_write", permissionLevel: "L4" },
+  ...videoToolPermissionsSeed,
 ];
 
 async function main() {

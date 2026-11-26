@@ -73,6 +73,18 @@ Xem chi tiết tại `apps/desktop/README.md`.
 
 Chưa triển khai — xem kế hoạch & hướng dẫn khởi tạo tại `apps/mobile/README.md`.
 
+## Video Agent (`agent_create_video_ai`)
+
+AI-Video quản lý vòng đời video: `IDEA → SCRIPTED → GENERATING → REVIEW → APPROVED → PUBLISHED`.
+Trang agent: `/agents?id=agent_create_video_ai` (kèm thư viện video: lọc, tạo, duyệt/từ chối, lưu trữ).
+
+- Giao việc: `/do @video Viết kịch bản video TikTok 30s giới thiệu sản phẩm X`.
+- Tool (qua Tool Gateway): `tool_video_search` (R0) · `tool_video_draft` (R1) · `tool_video_set_status` (R1) · `tool_video_generate` (R2) · `tool_video_publish` (R3, luôn cần Founder duyệt).
+- Agent **không** tự APPROVED/REJECTED; chỉ Founder (UI). `PUBLISHED` chỉ đạt được sau khi Founder duyệt Decision Package, và chỉ *ghi nhận* trạng thái — không tự đăng lên nền tảng.
+- Provider sinh video mặc định là **mô phỏng** (không có file thật). Đặt `VIDEO_GEN_API_URL` để dùng provider HTTP.
+- Agent và tool tự được tạo khi API khởi động (hoặc `pnpm db:seed`). Bảng `videos`: `services/api/migrations/*/003_add_videos.sql` (SQLite tự cập nhật qua `selfHealDb`; PostgreSQL: `prisma migrate deploy`).
+- Test: `pnpm --filter @ai-opc/api exec tsx src/scripts/testVideoAgent.ts` (không cần DB).
+
 ## Nguyên tắc quan trọng khi phát triển tiếp
 
 1. **Không gọi thẳng driver bên ngoài** (DB ghi, email, git, thanh toán...) —
