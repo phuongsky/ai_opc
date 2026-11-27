@@ -18,6 +18,8 @@ import {
   buildTimelineFromScript,
   setVideoStatus,
   updateVideo,
+  generateVideoWithProvider,
+  publishVideo,
 } from "../modules/videos/videoService";
 
 export const videosRouter = Router();
@@ -142,6 +144,25 @@ videosRouter.put("/:id/timeline", async (req, res) => {
 videosRouter.post("/:id/timeline/from-script", async (req, res) => {
   try {
     res.json(await buildTimelineFromScript(req.params.id, FOUNDER, { overwrite: req.body?.overwrite === true }));
+  } catch (err) {
+    fail(res, err);
+  }
+});
+
+
+/** Kích hoạt sinh video (chuyển SCRIPTED -> GENERATING -> REVIEW) */
+videosRouter.post("/:id/generate", async (req, res) => {
+  try {
+    res.json(await generateVideoWithProvider(req.params.id, req.body?.prompt, FOUNDER));
+  } catch (err) {
+    fail(res, err);
+  }
+});
+
+/** Xuất bản video (chuyển APPROVED -> PUBLISHED) */
+videosRouter.post("/:id/publish", async (req, res) => {
+  try {
+    res.json(await publishVideo(req.params.id, req.body || {}, FOUNDER));
   } catch (err) {
     fail(res, err);
   }

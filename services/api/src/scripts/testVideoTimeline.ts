@@ -103,6 +103,81 @@ async function run() {
   rows[0].status = "PUBLISHED";
   await assert.rejects(() => svc.saveTimeline(v.id, full.timeline, founder), /Không sửa timeline/);
   ok("không sửa timeline khi PUBLISHED");
+  // Khôi phục phong bì khi model chỉ trả params
+  const { recoverVideoDecision } = require("../modules/videos/videoRecovery");
+  const valid = new Set(["tool_video_draft", "tool_video_search", "tool_video_generate"]);
+  const r1 = recoverVideoDecision({ operation: "create", data: { title: "X" } }, valid);
+  assert.deepStrictEqual([r1.action, r1.toolId], ["CALL_TOOL", "tool_video_draft"]);
+  assert.strictEqual(recoverVideoDecision({ operation: "list" }, valid).toolId, "tool_video_search");
+  assert.strictEqual(recoverVideoDecision({ operation: "submit", id: "v" }, valid).toolId, "tool_video_generate");
+  assert.strictEqual(recoverVideoDecision({ action: "NONE", note: "x" }, valid), null);
+  assert.strictEqual(recoverVideoDecision({ operation: "create", data: { title: "X" } }, new Set()), null);
+  assert.strictEqual(recoverVideoDecision({ operation: "publish" }, valid), null);
+  ok("recoverVideoDecision: suy ra tool từ operation, không tự suy publish, tôn trọng quyền");
+
+  // Khôi phục thông minh từ văn bản / câu từ chối
+  const { recoverVideoIntentFromText } = require("../modules/videos/videoRecovery");
+  const rText = await recoverVideoIntentFromText(
+    '{"error": "Không thể thực hiện yêu cầu. Tôi là một trợ lý AI dựa trên văn bản..."}',
+    { title: "Tạo video giới thiệu dự án này", objective: "Tạo video giới thiệu dự án này" },
+    valid
+  );
+  assert.ok(rText && rText.action === "CALL_TOOL" && rText.toolId === "tool_video_draft");
+  assert.strictEqual((rText.params.data as any).autoTimeline, true);
+  ok("recoverVideoIntentFromText: tự động tạo draft và timeline khi gặp câu từ chối");
+
+  // normalizePlatform
+  assert.strictEqual(svc.normalizePlatform("reels"), "instagram");
+  assert.strictEqual(svc.normalizePlatform("shorts"), "youtube");
+  assert.strictEqual(svc.normalizePlatform("youtube"), "youtube");
+  ok("normalizePlatform: map reels -> instagram, shorts -> youtube");
+
+  // recoverVideoIntentFromText với tool_video_generate
+  const validGen = new Set(["tool_video_draft", "tool_video_search", "tool_video_generate", "tool_video_publish"]);
+  rows[0].status = "SCRIPTED";
+  const rGen = await recoverVideoIntentFromText(
+    "tool_video_generate",
+    { title: "Chạy lệnh sinh video", objective: "Chạy lệnh sinh video" },
+    validGen
+  );
+  assert.ok(rGen && rGen.action === "CALL_TOOL" && rGen.toolId === "tool_video_generate");
+  assert.strictEqual(rGen.params.id, rows[0].id);
+  ok("recoverVideoIntentFromText: khớp lệnh tool_video_generate với video SCRIPTED");
+
+  // recoverVideoIntentFromText với lệnh Approve / Duyệt
+  rows[0].status = "REVIEW";
+  const rApprove = await recoverVideoIntentFromText(
+    '{"status": "APPROVED", "message": "Task đã được phê duyệt."}',
+    { title: "Approve", objective: "Approve" },
+    validGen
+  );
+  assert.ok(rApprove && rApprove.action === "NONE");
+  assert.ok(rApprove.note.includes("phê duyệt thành công"));
+  assert.ok(rApprove.note.includes("xuất bản/export"));
+  assert.strictEqual(rows[0].status, "APPROVED");
+  ok("recoverVideoIntentFromText: lệnh Approve chuyển REVIEW thành APPROVED và hỏi xuất bản");
+
+  // recoverVideoIntentFromText xác nhận xuất bản với câu trả lời "Có" / "Export"
+  const rConfirmExport = await recoverVideoIntentFromText(
+    "Có",
+    { title: "Có", objective: "Có, hãy xuất bản video này" },
+    validGen
+  );
+  assert.ok(rConfirmExport && rConfirmExport.action === "CALL_TOOL" && rConfirmExport.toolId === "tool_video_publish");
+  assert.strictEqual(rConfirmExport.params.id, rows[0].id);
+  ok("recoverVideoIntentFromText: câu trả lời 'Có'/'Export' kích hoạt tool_video_publish cho video APPROVED");
+
+  // recoverVideoIntentFromText với tool_video_publish
+  rows[0].status = "APPROVED";
+  const rPub = await recoverVideoIntentFromText(
+    "tool_video_publish",
+    { title: "Xuất bản video", objective: "Xuất bản video" },
+    validGen
+  );
+  assert.ok(rPub && rPub.action === "CALL_TOOL" && rPub.toolId === "tool_video_publish");
+  assert.strictEqual(rPub.params.id, rows[0].id);
+  ok("recoverVideoIntentFromText: khớp lệnh tool_video_publish với video APPROVED");
+
   console.log("\nALL PASSED");
 }
 run().catch((e) => { console.error(e); process.exit(1); });

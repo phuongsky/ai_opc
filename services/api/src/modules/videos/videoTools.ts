@@ -55,6 +55,8 @@ function brief(v: Awaited<ReturnType<typeof getVideo>>) {
     aspectRatio: v.aspectRatio,
     durationSec: v.durationSec,
     hasScript: Boolean(v.script),
+    hasTimeline: v.hasTimeline,
+    studioUrl: `/studio?id=${v.id}`,
     assetUrl: v.assetUrl,
     publishedUrl: v.publishedUrl,
     costUsd: v.costUsd,

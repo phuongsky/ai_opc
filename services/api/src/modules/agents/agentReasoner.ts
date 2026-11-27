@@ -9,6 +9,7 @@
  * Hỗ trợ Multi-step Reasoning, Knowledge Base context, AI Self-Repair, và Heuristic Intent Recovery.
  */
 import { db } from "../../db/client";
+import { recoverVideoDecision, recoverVideoIntentFromText } from "../videos/videoRecovery";
 import { generateContent, isLlmConfigured, extractJsonObject } from "../../lib/llm";
 import { recordModelCost } from "../cost/costTracker";
 import { searchKnowledge, formatKnowledgeForPrompt } from "../memory/knowledgeBase";
@@ -1266,9 +1267,22 @@ export async function decideAgentAction(
     }
   }
 
+  // 1b. Agent video: model chỉ trả phần params (thiếu action/toolId) → suy ra tool từ "operation".
+  if (videoMode && parsedRaw) {
+    const vr = recoverVideoDecision(parsedRaw, validToolIds);
+    if (vr) {
+      console.log(`[AgentReasoner] Khôi phục phong bì CALL_TOOL cho agent video → ${vr.toolId}`);
+      return vr;
+    }
+  }
+
   // 2. Tự động khôi phục ý định thông minh dựa trên Task & Nội dung phản hồi
-  // (Bỏ qua cứu hộ theo từ khóa khách sạn với agent video: "phòng", "khách"... không liên quan.)
-  const recovered = videoMode ? null : recoverIntentFromTaskAndText(result.text, task, previousSteps, validToolIds);
+  let recovered: AgentAction | null = null;
+  if (videoMode) {
+    recovered = await recoverVideoIntentFromText(result.text, task, validToolIds);
+  } else {
+    recovered = recoverIntentFromTaskAndText(result.text, task, previousSteps, validToolIds);
+  }
   if (recovered) {
     console.log(`[AgentReasoner] Đã tự động khôi phục ý định hành động cho agent ${agentId}:`, recovered);
     return recovered;

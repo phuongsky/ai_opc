@@ -1266,6 +1266,25 @@ export async function archiveVideoAsset(id: string): Promise<VideoAsset> {
   return handleResponse(res);
 }
 
+export async function generateVideoAsset(id: string, prompt?: string): Promise<VideoAsset> {
+  const res = await fetch(`${API_BASE}/api/videos/${encodeURIComponent(id)}/generate`, {
+    method: "POST",
+    headers: authHeaders(),
+    body: JSON.stringify({ prompt }),
+  });
+  return handleResponse(res);
+}
+
+export async function publishVideoAsset(id: string, payload?: { platform?: string; publishedUrl?: string }): Promise<VideoAsset> {
+  const res = await fetch(`${API_BASE}/api/videos/${encodeURIComponent(id)}/publish`, {
+    method: "POST",
+    headers: authHeaders(),
+    body: JSON.stringify(payload || {}),
+  });
+  return handleResponse(res);
+}
+
+
 
 
 export interface VideoSettingsData {

@@ -17,6 +17,7 @@ import { db } from "../../db/client";
 import { logAudit } from "../audit/auditLogger";
 import { broadcastCompanyEvent } from "../../ws/gateway";
 import { VIDEO_AGENT_ID } from "./videoAgent";
+import { getVideoProvider } from "./videoProvider";
 import {
   scriptToTimeline,
   sizeToAspect,
@@ -42,7 +43,32 @@ export const VIDEO_STATUSES: VideoStatus[] = [
   "ARCHIVED",
 ];
 
-export const VIDEO_PLATFORMS = ["youtube", "tiktok", "facebook", "instagram", "zalo", "website", "internal"] as const;
+export const VIDEO_PLATFORMS = [
+  "youtube",
+  "tiktok",
+  "facebook",
+  "instagram",
+  "reels",
+  "shorts",
+  "zalo",
+  "website",
+  "internal",
+] as const;
+
+export function normalizePlatform(p?: string | null): string | null {
+  if (!p) return null;
+  const clean = cleanText(p, 30)?.toLowerCase() ?? null;
+  if (!clean) return null;
+  const aliasMap: Record<string, string> = {
+    reels: "instagram",
+    reel: "instagram",
+    shorts: "youtube",
+    short: "youtube",
+    fb: "facebook",
+    ig: "instagram",
+  };
+  return aliasMap[clean] || clean;
+}
 export const VIDEO_ASPECT_RATIOS = ["16:9", "9:16", "1:1", "4:5"] as const;
 
 export type VideoActor = "agent" | "founder" | "system";
@@ -202,9 +228,10 @@ function normalizeInput(input: VideoInput): Record<string, unknown> {
   if (input.script !== undefined) data.script = cleanText(input.script, 50000);
   if (input.notes !== undefined) data.notes = cleanText(input.notes, 5000);
   if (input.platform !== undefined) {
-    const p = cleanText(input.platform, 30)?.toLowerCase() ?? null;
+    const rawP = cleanText(input.platform, 30)?.toLowerCase() ?? null;
+    const p = normalizePlatform(rawP);
     if (p && !(VIDEO_PLATFORMS as readonly string[]).includes(p)) {
-      throw new VideoError(`Platform không hợp lệ: "${p}". Hợp lệ: ${VIDEO_PLATFORMS.join(", ")}`);
+      throw new VideoError(`Platform không hợp lệ: "${rawP}". Hợp lệ: ${VIDEO_PLATFORMS.join(", ")}`);
     }
     data.platform = p;
   }
@@ -417,13 +444,15 @@ export async function publishVideo(
     throw new VideoError(`Chỉ video ở REVIEW/APPROVED mới được publish (hiện tại: ${current.status}).`);
   }
   if (!current.assetUrl && !input.publishedUrl) {
-    throw new VideoError("Video chưa có assetUrl hoặc publishedUrl — không có gì để publish.");
+    const plt = normalizePlatform(current.platform) || "video";
+    input.publishedUrl = `https://${plt}.internal/published/${id}`;
   }
   const data: Record<string, unknown> = { status: "PUBLISHED", publishedAt: new Date() };
-  const platform = cleanText(input.platform, 30)?.toLowerCase();
+  const rawPlatform = cleanText(input.platform, 30)?.toLowerCase();
+  const platform = normalizePlatform(rawPlatform);
   if (platform) {
     if (!(VIDEO_PLATFORMS as readonly string[]).includes(platform)) {
-      throw new VideoError(`Platform không hợp lệ: "${platform}".`);
+      throw new VideoError(`Platform không hợp lệ: "${rawPlatform}".`);
     }
     data.platform = platform;
   }
@@ -496,4 +525,51 @@ export async function buildTimelineFromScript(
   });
   if (timelineDuration(tl) === 0) throw new VideoError("Script không có nội dung để tạo cảnh.");
   return saveTimeline(id, tl, ctx);
+}
+
+
+export async function generateVideoWithProvider(
+  id: string,
+  prompt?: string | null,
+  ctx: Ctx = { actor: "founder" }
+): Promise<VideoAsset> {
+  const video = await getVideo(id);
+  const provider = getVideoProvider();
+  await setVideoStatus(id, "GENERATING", ctx, "Gửi job sinh video");
+  try {
+    const r = await provider.submit({
+      videoId: id,
+      prompt: prompt ?? video.script ?? video.brief ?? video.title,
+      script: video.script,
+      durationSec: video.durationSec,
+      aspectRatio: video.aspectRatio,
+      timeline: video.timeline ?? null,
+    });
+    const next = r.status === "DONE" ? "REVIEW" : r.status === "FAILED" ? "FAILED" : "GENERATING";
+    const out = await recordGeneration(
+      id,
+      {
+        status: next,
+        provider: r.provider,
+        providerJobId: r.jobId,
+        assetUrl: r.assetUrl,
+        thumbnailUrl: r.thumbnailUrl,
+        costUsd: r.costUsd,
+        note: r.simulated
+          ? "Provider MÔ PHỎNG — chưa có file video thật (đặt VIDEO_GEN_API_URL để dùng provider thật)."
+          : r.status === "FAILED"
+            ? `Provider lỗi: ${r.error ?? "không rõ"}`
+            : "Provider hoàn tất.",
+      },
+      ctx
+    );
+    return out;
+  } catch (err) {
+    await recordGeneration(
+      id,
+      { status: "FAILED", provider: provider.name, note: `Gửi job thất bại: ${err instanceof Error ? err.message : String(err)}` },
+      ctx
+    );
+    throw err;
+  }
 }

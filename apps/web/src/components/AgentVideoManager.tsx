@@ -17,6 +17,9 @@ import {
   AlertTriangle,
   Terminal,
   Clapperboard,
+  Play,
+  Send,
+  Eye,
 } from "lucide-react";
 import type { VideoAsset, VideoStatus } from "@ai-opc/shared";
 import {
@@ -24,6 +27,8 @@ import {
   createVideoAsset,
   fetchVideoStats,
   fetchVideos,
+  generateVideoAsset,
+  publishVideoAsset,
   setVideoAssetStatus,
   type VideoStats,
 } from "@/lib/api";
@@ -54,7 +59,7 @@ const STATUS_STYLE: Record<VideoStatus, string> = {
   ARCHIVED: "border-zinc-700/60 bg-zinc-800/40 text-zinc-500",
 };
 
-const PLATFORMS = ["youtube", "tiktok", "facebook", "instagram", "zalo", "website", "internal"];
+const PLATFORMS = ["youtube", "tiktok", "facebook", "instagram", "zalo", "website", "internal", "reels", "shorts"];
 const RATIOS = ["16:9", "9:16", "1:1", "4:5"];
 
 const inputCls =
@@ -115,9 +120,15 @@ export function AgentVideoManager({ readOnly = false }: { readOnly?: boolean }) 
     return () => clearTimeout(timer);
   }, [load, query]);
 
+  const [fresh, setFresh] = useState<string | null>(null);
   useEffect(() => {
-    if (lastEvent?.type === "VIDEO_UPDATED") load();
+    if (lastEvent?.type === "VIDEO_UPDATED") {
+      load();
+      const id = (lastEvent as any)?.payload?.id;
+      if (typeof id === "string") setFresh(id);
+    }
   }, [lastEvent, load]);
+  const freshVideo = fresh ? videos.find((x) => x.id === fresh) : undefined;
 
   async function act(id: string, fn: () => Promise<unknown>) {
     setBusyId(id);
@@ -199,9 +210,8 @@ export function AgentVideoManager({ readOnly = false }: { readOnly?: boolean }) 
             <button
               key={s}
               onClick={() => setStatusFilter(statusFilter === s ? "" : s)}
-              className={`flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11px] transition-all cursor-pointer ${
-                statusFilter === s ? STATUS_STYLE[s] : "border-border/80 bg-white/5 text-zinc-400 hover:text-zinc-200"
-              }`}
+              className={`flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11px] transition-all cursor-pointer ${statusFilter === s ? STATUS_STYLE[s] : "border-border/80 bg-white/5 text-zinc-400 hover:text-zinc-200"
+                }`}
             >
               <span className="font-mono">{s}</span>
               <span className="font-semibold">{stats.byStatus[s]}</span>
@@ -289,6 +299,18 @@ export function AgentVideoManager({ readOnly = false }: { readOnly?: boolean }) 
         />
       </div>
 
+      {freshVideo && (
+        <div className="mb-3 flex items-center gap-3 rounded-xl border border-violet-400/40 bg-violet-500/10 px-4 py-2.5 text-xs text-violet-200">
+          <Clapperboard className="h-4 w-4 shrink-0" />
+          <span className="flex-1 truncate">
+            {L("Video vừa được cập nhật:", "Video just updated:")} <b>{freshVideo.title}</b> ({freshVideo.status})
+          </span>
+          <Link href={`/studio?id=${encodeURIComponent(freshVideo.id)}`} className="rounded-lg bg-violet-500 px-3 py-1 font-semibold text-white hover:bg-violet-400">
+            {L("Mở Studio", "Open Studio")}
+          </Link>
+          <button onClick={() => setFresh(null)} className="text-violet-300 hover:text-white">✕</button>
+        </div>
+      )}
       {error && (
         <div className="flex items-start gap-2 rounded-xl border border-rose-500/30 bg-rose-500/10 p-3 text-xs text-rose-300">
           <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
@@ -331,8 +353,25 @@ export function AgentVideoManager({ readOnly = false }: { readOnly?: boolean }) 
                   {!readOnly && (
                     <div className="flex items-center gap-1.5">
                       {busy && <Loader2 className="h-3.5 w-3.5 animate-spin text-zinc-400" />}
+                      {(v.status === "SCRIPTED" || (v.status === "IDEA" && Boolean(v.script))) && (
+                        <button
+                          disabled={busy}
+                          onClick={() => act(v.id, () => generateVideoAsset(v.id))}
+                          className="flex items-center gap-1 rounded-lg border border-amber-500/40 bg-amber-500/15 px-2 py-1 text-[11px] font-medium text-amber-300 hover:bg-amber-500/25 disabled:opacity-50 cursor-pointer"
+                          title={L("Bắt đầu sinh video từ kịch bản/timeline", "Generate video")}
+                        >
+                          <Play className="h-3 w-3 fill-amber-300" /> {L("Sinh video", "Generate")}
+                        </button>
+                      )}
                       {v.status === "REVIEW" && (
                         <>
+                          <Link
+                            href={`/studio?id=${encodeURIComponent(v.id)}`}
+                            className="flex items-center gap-1 rounded-lg border border-sky-500/30 bg-sky-500/10 px-2 py-1 text-[11px] font-medium text-sky-300 hover:bg-sky-500/20 cursor-pointer"
+                            title={L("Xem và biên tập tại Video Studio", "View in Video Studio")}
+                          >
+                            <Eye className="h-3 w-3" /> {L("Xem", "View")}
+                          </Link>
                           <button
                             disabled={busy}
                             onClick={() => act(v.id, () => setVideoAssetStatus(v.id, "APPROVED"))}
@@ -348,6 +387,16 @@ export function AgentVideoManager({ readOnly = false }: { readOnly?: boolean }) 
                             <X className="h-3 w-3" /> {L("Từ chối", "Reject")}
                           </button>
                         </>
+                      )}
+                      {v.status === "APPROVED" && (
+                        <button
+                          disabled={busy}
+                          onClick={() => act(v.id, () => publishVideoAsset(v.id, { platform: v.platform || undefined, publishedUrl: v.assetUrl || undefined }))}
+                          className="flex items-center gap-1 rounded-lg border border-cyan-500/40 bg-cyan-500/15 px-2 py-1 text-[11px] font-medium text-cyan-300 hover:bg-cyan-500/25 disabled:opacity-50 cursor-pointer"
+                          title={L("Đánh dấu xuất bản video", "Publish video")}
+                        >
+                          <Send className="h-3 w-3" /> {L("Xuất bản", "Publish")}
+                        </button>
                       )}
                       {v.status !== "PUBLISHED" && v.status !== "ARCHIVED" && (
                         <button
