@@ -71,7 +71,7 @@ function table(pk: string[] = ["id"], defaults: () => Row = () => ({})) {
 const fakeDb: any = {
   video: table(["id"], () => ({
     brief: null, script: null, platform: null, aspectRatio: "16:9", durationSec: null, tags: null,
-    assetUrl: null, thumbnailUrl: null, provider: null, providerJobId: null, publishedUrl: null,
+    timeline: null, assetUrl: null, thumbnailUrl: null, provider: null, providerJobId: null, publishedUrl: null,
     costUsd: 0, notes: null, taskId: null, createdAt: new Date(), updatedAt: new Date(), publishedAt: null,
   })),
   auditLog: table(["id"]),

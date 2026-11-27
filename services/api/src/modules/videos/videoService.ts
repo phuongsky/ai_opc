@@ -17,7 +17,16 @@ import { db } from "../../db/client";
 import { logAudit } from "../audit/auditLogger";
 import { broadcastCompanyEvent } from "../../ws/gateway";
 import { VIDEO_AGENT_ID } from "./videoAgent";
-import type { VideoAsset, VideoStatus } from "@ai-opc/shared";
+import {
+  scriptToTimeline,
+  sizeToAspect,
+  summarizeTimeline,
+  timelineDuration,
+  validateTimeline,
+  type VideoAsset,
+  type VideoStatus,
+  type VideoTimeline,
+} from "@ai-opc/shared";
 
 export { VIDEO_AGENT_ID };
 
@@ -73,6 +82,7 @@ interface VideoRow {
   aspectRatio: string;
   durationSec: number | null;
   tags: string | null;
+  timeline: string | null;
   assetUrl: string | null;
   thumbnailUrl: string | null;
   provider: string | null;
@@ -98,8 +108,21 @@ function parseTags(raw: string | null): string[] {
   }
 }
 
-export function serializeVideo(row: VideoRow): VideoAsset {
+function parseTimeline(raw: string | null): VideoTimeline | null {
+  if (!raw) return null;
+  try {
+    const r = validateTimeline(JSON.parse(raw));
+    return r.ok ? r.timeline : null;
+  } catch {
+    return null;
+  }
+}
+
+/** `withTimeline`: chỉ kèm toàn bộ timeline khi lấy 1 video (getVideo) — danh sách chỉ có cờ hasTimeline. */
+export function serializeVideo(row: VideoRow, withTimeline = false): VideoAsset {
   return {
+    hasTimeline: Boolean(row.timeline),
+    ...(withTimeline ? { timeline: parseTimeline(row.timeline) } : {}),
     id: row.id,
     title: row.title,
     brief: row.brief,
@@ -228,7 +251,7 @@ export async function listVideos(filter: VideoListFilter = {}): Promise<VideoAss
     orderBy: { updatedAt: "desc" },
     take: Math.min(Math.max(filter.limit ?? 100, 1), 500),
   });
-  let videos = rows.map(serializeVideo);
+  let videos = rows.map((r) => serializeVideo(r));
   if (filter.q) {
     // Lọc ở tầng ứng dụng để chạy giống nhau trên cả 3 DB (không phụ thuộc collation/LIKE).
     const needle = filter.q.trim().toLowerCase();
@@ -242,7 +265,7 @@ export async function listVideos(filter: VideoListFilter = {}): Promise<VideoAss
 export async function getVideo(id: string): Promise<VideoAsset> {
   const row: VideoRow | null = await db.video.findUnique({ where: { id } });
   if (!row) throw new VideoError(`Video không tồn tại: ${id}`, "NOT_FOUND");
-  return serializeVideo(row);
+  return serializeVideo(row, true);
 }
 
 export async function getVideoStats(): Promise<{ total: number; byStatus: Record<string, number>; totalCostUsd: number }> {
@@ -335,8 +358,8 @@ export async function setVideoStatus(
       `Không thể chuyển ${current.status} → ${next}. Cho phép từ ${current.status}: ${TRANSITIONS[current.status].join(", ") || "(không có)"}.`
     );
   }
-  if (next === "GENERATING" && !current.script) {
-    throw new VideoError("Cần có script trước khi chuyển sang GENERATING.");
+  if (next === "GENERATING" && !current.script && !current.hasTimeline) {
+    throw new VideoError("Cần có script hoặc timeline (Video Studio) trước khi chuyển sang GENERATING.");
   }
 
   const data: Record<string, unknown> = { status: next };
@@ -418,4 +441,59 @@ export async function publishVideo(
   });
   emit(video);
   return video;
+}
+
+// ---- Timeline (Video Studio) -------------------------------------------------
+
+/** Trạng thái cho phép sửa timeline: chưa/không còn gắn với 1 bản sinh đã duyệt hay đang chạy. */
+const TIMELINE_EDITABLE: VideoStatus[] = ["IDEA", "SCRIPTED", "REVIEW", "REJECTED", "FAILED"];
+
+/**
+ * Lưu timeline do Video Studio (hoặc Agent) soạn — là CĂN CỨ để sinh/dựng video.
+ * Đồng bộ durationSec + aspectRatio theo timeline; video IDEA có clip → SCRIPTED.
+ */
+export async function saveTimeline(id: string, input: unknown, ctx: Ctx): Promise<VideoAsset> {
+  const current = await getVideo(id);
+  if (!TIMELINE_EDITABLE.includes(current.status)) {
+    throw new VideoError(
+      `Không sửa timeline khi video ở ${current.status}` +
+        (current.status === "APPROVED" ? " — đưa về REVIEW trước." : "."),
+      "INVALID"
+    );
+  }
+  const v = validateTimeline(input);
+  if (!v.ok) throw new VideoError(`Timeline không hợp lệ — ${v.error}`);
+  const tl = v.timeline;
+  const duration = timelineDuration(tl);
+  const hasClips = duration > 0;
+
+  const data: Record<string, unknown> = { timeline: JSON.stringify(tl) };
+  if (hasClips) data.durationSec = Math.min(3600, Math.max(1, Math.ceil(duration)));
+  data.aspectRatio = sizeToAspect(tl.width, tl.height);
+  if (hasClips && current.status === "IDEA") data.status = "SCRIPTED";
+
+  const row: VideoRow = await db.video.update({ where: { id }, data });
+  const video = serializeVideo(row);
+  await audit(ctx, "VIDEO_TIMELINE_SAVED", video, summarizeTimeline(tl));
+  emit(video);
+  return video;
+}
+
+/** Dựng timeline khởi tạo từ script (mỗi dòng = 1 cảnh). Không ghi đè timeline có sẵn trừ khi overwrite. */
+export async function buildTimelineFromScript(
+  id: string,
+  ctx: Ctx,
+  opts: { overwrite?: boolean } = {}
+): Promise<VideoAsset> {
+  const current = await getVideo(id);
+  if (!current.script) throw new VideoError("Video chưa có script để dựng timeline.");
+  if (current.timeline && timelineDuration(current.timeline) > 0 && !opts.overwrite) {
+    throw new VideoError("Video đã có timeline. Dùng overwrite=true nếu muốn dựng lại từ script.");
+  }
+  const tl = scriptToTimeline(current.script, {
+    aspectRatio: current.aspectRatio,
+    targetSeconds: current.durationSec,
+  });
+  if (timelineDuration(tl) === 0) throw new VideoError("Script không có nội dung để tạo cảnh.");
+  return saveTimeline(id, tl, ctx);
 }

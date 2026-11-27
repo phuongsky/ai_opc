@@ -85,6 +85,16 @@ Trang agent: `/agents?id=agent_create_video_ai` (kèm thư viện video: lọc, 
 - Agent và tool tự được tạo khi API khởi động (hoặc `pnpm db:seed`). Bảng `videos`: `services/api/migrations/*/003_add_videos.sql` (SQLite tự cập nhật qua `selfHealDb`; PostgreSQL: `prisma migrate deploy`).
 - Test: `pnpm --filter @ai-opc/api exec tsx src/scripts/testVideoAgent.ts` (không cần DB).
 
+### Video Studio (`/studio?id=<videoId>`)
+
+Giao diện dựng video kiểu NLE (preview · timeline nhiều track · inspector). Mở từ trang Agent → "Mở Studio dựng video".
+- Timeline JSON (`VideoAsset.timeline`, schema zod ở `packages/shared/src/videoTimeline.ts`) lưu qua `PUT /api/videos/:id/timeline` và là căn cứ để Agent/provider tạo video (`tool_video_generate` truyền `timeline` cho provider).
+- `POST /api/videos/:id/timeline/from-script` dựng timeline từ script. Chỉ sửa được khi trạng thái IDEA/SCRIPTED/REVIEW/REJECTED/FAILED.
+- Xuất WebM ngay trên trình duyệt (MediaRecorder, thời gian thực, chưa có âm thanh).
+- Phím tắt: Space, S (cắt), Del, Ctrl+D, Ctrl+Z/Shift+Z, Ctrl+S.
+- Migration `004_add_video_timeline` (cột `videos.timeline`); SQLite tự vá khi khởi động.
+- Test: `pnpm --filter @ai-opc/api exec tsx src/scripts/testVideoTimeline.ts`.
+
 ## Nguyên tắc quan trọng khi phát triển tiếp
 
 1. **Không gọi thẳng driver bên ngoài** (DB ghi, email, git, thanh toán...) —

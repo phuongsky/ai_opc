@@ -14,6 +14,8 @@ import {
   getVideo,
   getVideoStats,
   listVideos,
+  saveTimeline,
+  buildTimelineFromScript,
   setVideoStatus,
   updateVideo,
 } from "../modules/videos/videoService";
@@ -122,6 +124,24 @@ videosRouter.post("/:id/status", async (req, res) => {
 videosRouter.delete("/:id", async (req, res) => {
   try {
     res.json(await setVideoStatus(req.params.id, "ARCHIVED", FOUNDER, "Founder lưu trữ video"));
+  } catch (err) {
+    fail(res, err);
+  }
+});
+
+/** Lưu timeline từ Video Studio. Body: { timeline } — validate đầy đủ ở server (không tin client). */
+videosRouter.put("/:id/timeline", async (req, res) => {
+  try {
+    res.json(await saveTimeline(req.params.id, req.body?.timeline, FOUNDER));
+  } catch (err) {
+    fail(res, err);
+  }
+});
+
+/** Dựng timeline khởi tạo từ script. Body: { overwrite?: boolean } */
+videosRouter.post("/:id/timeline/from-script", async (req, res) => {
+  try {
+    res.json(await buildTimelineFromScript(req.params.id, FOUNDER, { overwrite: req.body?.overwrite === true }));
   } catch (err) {
     fail(res, err);
   }

@@ -365,6 +365,10 @@ export interface VideoAsset {
   aspectRatio: string;
   durationSec: number | null;
   tags: string[];
+  /** Có timeline Video Studio hay chưa (danh sách không kèm dữ liệu timeline). */
+  hasTimeline: boolean;
+  /** Chỉ có khi lấy 1 video (GET /api/videos/:id). */
+  timeline?: import("./videoTimeline").VideoTimeline | null;
   assetUrl: string | null;
   thumbnailUrl: string | null;
   provider: string | null;

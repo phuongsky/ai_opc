@@ -179,6 +179,7 @@ model Video {
   aspectRatio   String    @default("16:9") @map("aspect_ratio")
   durationSec   Int?      @map("duration_sec")
   tags          String?   // JSON array dạng text, portable đa DB
+  timeline      String?   // NLE timeline v1 (JSON) từ Video Studio — căn cứ dựng video
   assetUrl      String?   @map("asset_url")
   thumbnailUrl  String?   @map("thumbnail_url")
   provider      String?

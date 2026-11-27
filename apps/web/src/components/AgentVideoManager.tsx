@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   Film,
@@ -15,6 +16,7 @@ import {
   Loader2,
   AlertTriangle,
   Terminal,
+  Clapperboard,
 } from "lucide-react";
 import type { VideoAsset, VideoStatus } from "@ai-opc/shared";
 import {
@@ -392,6 +394,9 @@ export function AgentVideoManager({ readOnly = false }: { readOnly?: boolean }) 
                       </div>
                     )}
                     <div className="flex flex-wrap gap-4">
+                      <Link href={`/studio?id=${encodeURIComponent(v.id)}`} className="flex items-center gap-1 font-semibold text-violet-300 hover:underline">
+                        <Clapperboard className="h-3 w-3" /> {L("Mở Studio dựng video", "Open Video Studio")}{v.hasTimeline ? "" : L(" (chưa có timeline)", " (no timeline yet)")}
+                      </Link>
                       {v.assetUrl ? (
                         <a href={v.assetUrl} target="_blank" rel="noreferrer noopener" className="flex items-center gap-1 text-accent hover:underline">
                           <ExternalLink className="h-3 w-3" /> {L("Mở file video", "Open video file")}

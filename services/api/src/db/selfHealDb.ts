@@ -107,6 +107,12 @@ export async function selfHealDatabase(): Promise<void> {
     await (db as any).$executeRawUnsafe(
       "CREATE INDEX IF NOT EXISTS videos_status_idx ON videos(status);"
     );
+    // 3b. Video Studio: cột timeline (JSON) cho DB đã tạo bảng videos từ trước.
+    const vcols = (await (db as any).$queryRawUnsafe("PRAGMA table_info(videos)")) as Array<{ name: string }> | undefined;
+    if ((vcols || []).length > 0 && !(vcols || []).some((c) => c.name === "timeline")) {
+      await (db as any).$executeRawUnsafe("ALTER TABLE videos ADD COLUMN timeline TEXT;");
+      console.log("[selfHealDb] ✓ Đã bổ sung cột videos.timeline.");
+    }
   } catch (err: any) {
     console.warn("[selfHealDb] Cảnh báo khởi tạo bảng videos:", err?.message || err);
   }

@@ -17,6 +17,7 @@
  */
 import { randomUUID } from "crypto";
 import { db } from "../../db/client";
+import type { VideoTimeline } from "@ai-opc/shared";
 
 export interface DynamicVideoConfig {
   videoGenApiUrl?: string | null;
@@ -59,6 +60,8 @@ export interface SubmitRequest {
   script?: string | null;
   durationSec?: number | null;
   aspectRatio: string;
+  /** Căn cứ dựng video từ Video Studio (NLE timeline v1) — null nếu video chỉ có script. */
+  timeline?: VideoTimeline | null;
 }
 
 export interface ProviderResult {

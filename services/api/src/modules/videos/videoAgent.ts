@@ -47,7 +47,8 @@ export const videoToolsSeed = [
     description:
       'Params JSON — TẠO: {"operation":"create","data":{"title":"...","brief":"...","script":"...","platform":"tiktok","aspectRatio":"9:16","durationSec":30,"tags":["a","b"]}}. ' +
       'SỬA: {"operation":"update","id":"vid_...","data":{...}}. Có script → trạng thái tự là SCRIPTED, chưa có → IDEA. ' +
-      "Không sửa được video đã PUBLISHED/ARCHIVED.",
+      'Có thể thêm "autoTimeline":true vào data (dựng timeline Video Studio từ script, mỗi dòng = 1 cảnh) hoặc "timeline":{...}. ' +
+      "Founder tinh chỉnh timeline tại Video Studio (/studio?id=...). Không sửa được video đã PUBLISHED/ARCHIVED.",
     riskLevel: "R1",
     requiresApproval: false,
   },

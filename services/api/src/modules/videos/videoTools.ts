@@ -13,8 +13,11 @@ import {
   recordGeneration,
   setVideoStatus,
   updateVideo,
+  buildTimelineFromScript,
+  saveTimeline,
   type VideoInput,
 } from "./videoService";
+import { summarizeTimeline } from "@ai-opc/shared";
 import { getVideoProvider } from "./videoProvider";
 
 const AGENT = { actor: "agent" as const };
@@ -64,7 +67,11 @@ export function registerVideoToolDrivers(): void {
   registerToolDriver("tool_video_search", async (params) => {
     const op = (str(params.operation) ?? (params.id ? "get" : "list")).toLowerCase();
     if (op === "stats") return getVideoStats();
-    if (op === "get") return getVideo(requireId(params));
+    if (op === "get") {
+      // Không trả toàn bộ timeline (có thể chứa ảnh base64) cho LLM — chỉ tóm tắt.
+      const { timeline, ...rest } = await getVideo(requireId(params));
+      return { ...rest, timelineSummary: timeline ? summarizeTimeline(timeline) : null };
+    }
     const videos = await listVideos({
       status: str(params.status),
       platform: str(params.platform),
@@ -78,11 +85,24 @@ export function registerVideoToolDrivers(): void {
   registerToolDriver("tool_video_draft", async (params) => {
     const op = (str(params.operation) ?? (params.id ? "update" : "create")).toLowerCase();
     const input = pickInput(params);
+    const data = (params.data as Record<string, unknown> | undefined) ?? {};
+    const timeline = data.timeline ?? params.timeline;
+    const autoTimeline = Boolean(data.autoTimeline ?? params.autoTimeline);
+    const withTimeline = async (id: string) => {
+      if (timeline !== undefined && timeline !== null) await saveTimeline(id, timeline, AGENT);
+      else if (autoTimeline) await buildTimelineFromScript(id, AGENT, { overwrite: true });
+      return brief(await getVideo(id));
+    };
     if (op === "create") {
       if (!input.title) throw new VideoError("Tạo video cần 'data.title'.");
-      return brief(await createVideo({ ...input, title: input.title }, AGENT));
+      const created = await createVideo({ ...input, title: input.title }, AGENT);
+      return withTimeline(created.id);
     }
-    if (op === "update") return brief(await updateVideo(requireId(params), input, AGENT));
+    if (op === "update") {
+      const id = requireId(params);
+      if (Object.keys(input).length) await updateVideo(id, input, AGENT);
+      return withTimeline(id);
+    }
     throw new VideoError(`operation không hợp lệ: "${op}" (create | update).`);
   });
 
@@ -133,6 +153,7 @@ export function registerVideoToolDrivers(): void {
         script: video.script,
         durationSec: video.durationSec,
         aspectRatio: video.aspectRatio,
+        timeline: video.timeline ?? null,
       });
       const next = r.status === "DONE" ? "REVIEW" : r.status === "FAILED" ? "FAILED" : "GENERATING";
       const out = await recordGeneration(

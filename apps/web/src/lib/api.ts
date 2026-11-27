@@ -1291,3 +1291,27 @@ export async function updateVideoSettings(payload: {
   });
   return handleResponse(res);
 }
+
+export async function fetchVideo(id: string): Promise<VideoAsset> {
+  const res = await fetch(`${API_BASE}/api/videos/${encodeURIComponent(id)}`, { headers: authHeaders() });
+  return handleResponse(res);
+}
+
+export async function saveVideoTimeline(id: string, timeline: unknown): Promise<VideoAsset> {
+  const res = await fetch(`${API_BASE}/api/videos/${encodeURIComponent(id)}/timeline`, {
+    method: "PUT",
+    headers: authHeaders(),
+    body: JSON.stringify({ timeline }),
+  });
+  return handleResponse(res);
+}
+
+export async function buildVideoTimelineFromScript(id: string, overwrite = false): Promise<VideoAsset> {
+  const res = await fetch(`${API_BASE}/api/videos/${encodeURIComponent(id)}/timeline/from-script`, {
+    method: "POST",
+    headers: authHeaders(),
+    body: JSON.stringify({ overwrite }),
+  });
+  return handleResponse(res);
+}
+
